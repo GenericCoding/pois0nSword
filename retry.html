@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>pois0nSword retry</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 16px; }
+    </style>
+</head>
+<body>
+    <p>Resetting WebContent state before next attempt…</p>
+    <script>
+        const params = new URLSearchParams(location.search);
+        const next = params.get("next") || "/testbenchpublic.html";
+        const delay = Math.max(0, parseInt(params.get("delay") || "2500", 10));
+        setTimeout(() => location.replace(next), delay);
+    </script>
+</body>
+</html>
