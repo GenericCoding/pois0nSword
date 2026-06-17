@@ -1,12 +1,18 @@
 # posi0nSword 
 By GenericCoding with a major contribution by @zeroxjf fixing webkit r/w. 
 
-A demonstration of arbitrary read write using cve-2025-43529 on iOS 26.1 
+A demonstration of arbitrary webcontent read write using cve-2025-43529 on iOS 26.1 
 
-- [x] R/W primatives 
-- [x] GC disabling in WIP branch
-- [x] JitAllowList overwrite in WIP branch
-- [x] Get slide in WIP branch
+- [x] R/W primatives
+
+# WIP branch features:
+- [x] GC disabling
+- [x] JitAllowList overwrite
+- [x] Get slide
+- [x] Initial work on creating the web worker for dlopen
+- [x] Most iPhone 15 plus offsets for 26.1
+- [x] Patch offsets with slide
+- [x] Get JSC_base address 
 
 
 Most of the code comes from cve-2025-43529 POC by jir4vv1t and the darksword web implementation. (https://github.com/ghh-jb/DarkSword/) 
