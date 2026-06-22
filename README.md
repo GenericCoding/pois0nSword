@@ -1,12 +1,23 @@
-# posi0nSword 
-By GenericCoding with a major contribution by @zeroxjf fixing webkit r/w. 
+# pois0nSword 
+pois0nSword is an iOS project with the goal of eventually enabling user interface customization.
 
-A demonstration of arbitrary webcontent read write using cve-2025-43529 on iOS 26.1 
+Currently a demonstration of arbitrary webcontent read write using cve-2025-43529 on iOS 26.1 
+
+Credits:
+
+
+GenericCoding - main developer
+zeroxjf - fixing webcontent r/w and debugging
+varik - fixing iOS offset for GC disabling which fixed a crash
+
+
+
+
 
 - [x] R/W primatives
 
 #### WIP branch features:
-- [x] GC disabling
+- [x] GC disabling 
 - [x] JitAllowList overwrite
 - [x] Get slide
 - [x] Get correct vtable for web worker 
@@ -14,7 +25,6 @@ A demonstration of arbitrary webcontent read write using cve-2025-43529 on iOS 2
 - [x] Most iPhone 15 plus offsets for 26.1
 - [x] Patch offsets with slide
 - [x] Get JSC_base address 
-
 
 Most of the code comes from cve-2025-43529 POC by jir4vv1t and the darksword web implementation. (https://github.com/ghh-jb/DarkSword/) 
 
