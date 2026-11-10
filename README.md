@@ -2,7 +2,6 @@
 
 In development, not currently useful for users. 
 
-pois0nSword is an iOS project with the goal of eventually enabling user interface customization.
 
 Currently a demonstration of arbitrary webcontent read write using cve-2025-43529 on iOS 26.1. As well as a PAC bypass utilizing CVE-2026-20700. 
 Credits:
